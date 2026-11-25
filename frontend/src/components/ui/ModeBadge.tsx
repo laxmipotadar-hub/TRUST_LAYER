@@ -1,28 +1,25 @@
 import React from "react";
-import type { ModeType } from "../../types";
 import { copy } from "../../copy";
 
+export type ModeBadgeType = "LIVE" | "REAL" | "CACHED" | "DEMO";
+
 export interface ModeBadgeProps {
-  mode: ModeType;
+  mode: ModeBadgeType;
   className?: string;
 }
 
-/**
- * Mode badges use distinct hues so they never look like decisions:
- * - REAL = solid navy
- * - CACHED = steel-blue outline
- * - DEMO = violet
- */
 export const ModeBadge: React.FC<ModeBadgeProps> = ({ mode, className = "" }) => {
-  const styles = {
+  const styles: Record<ModeBadgeType, string> = {
+    LIVE: "bg-[var(--brand-navy)] text-white border border-[var(--brand-navy)]",
     REAL: "bg-[var(--brand-navy)] text-white border border-[var(--brand-navy)]",
-    CACHED:
-      "bg-transparent text-[var(--brand-steel)] border border-[var(--brand-steel)]",
+    CACHED: "bg-transparent text-[var(--brand-steel)] border border-[var(--brand-steel)]",
     DEMO: "bg-[var(--mode-demo-bg)] text-[var(--mode-demo-text)] border border-[var(--mode-demo-bg)]",
-  }[mode];
+  };
 
   const label =
-    mode === "REAL"
+    mode === "LIVE"
+      ? "LIVE"
+      : mode === "REAL"
       ? copy.modes.real
       : mode === "CACHED"
       ? copy.modes.cached
@@ -30,9 +27,9 @@ export const ModeBadge: React.FC<ModeBadgeProps> = ({ mode, className = "" }) =>
 
   return (
     <span
-      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[14px] font-semibold tracking-wide ${styles} ${className}`}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[14px] font-semibold tracking-wide ${styles[mode]} ${className}`}
       title={
-        mode === "REAL"
+        mode === "LIVE" || mode === "REAL"
           ? copy.modes.realDescription
           : mode === "CACHED"
           ? copy.modes.cachedDescription

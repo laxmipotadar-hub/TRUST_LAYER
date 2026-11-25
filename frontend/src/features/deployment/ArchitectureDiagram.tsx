@@ -1,171 +1,99 @@
-import React, { useState } from "react";
-import { ArrowRight, Shield, Database } from "lucide-react";
+import React from "react";
+import { PhoneIncoming, Server, Cpu, ShieldCheck, Headphones, ArrowRight, Bot } from "lucide-react";
 import { Card } from "../../components/ui/Card";
-import { Badge } from "../../components/ui/Badge";
 import { Banner } from "../../components/ui/Banner";
-import { copy } from "../../copy";
-
-type NodeTag = "PROPOSED" | "BUILT IN DEMO" | "FUTURE";
-
-interface ArchNode {
-  id: string;
-  title: string;
-  tag: NodeTag;
-  input: string;
-  output: string;
-  responsibility: string;
-}
-
-const PIPELINE_NODES: ArchNode[] = [
-  {
-    id: "customer",
-    title: "Customer call",
-    tag: "PROPOSED",
-    input: "Caller voice stream over PSTN / VoIP",
-    output: "Raw telephony audio frames",
-    responsibility: "Originating caller audio channel; untrusted external source.",
-  },
-  {
-    id: "pbx",
-    title: "Bank telephony / PBX",
-    tag: "PROPOSED",
-    input: "PSTN / SIP trunk session",
-    output: "8kHz / 16kHz PCM or WAV media stream",
-    responsibility: "Routes call audio to security sidecar; no PBX or Twilio connected in this demo.",
-  },
-  {
-    id: "aegis-layer",
-    title: "AEGIS audio security layer",
-    tag: "BUILT IN DEMO",
-    input: "Audio clip + claimed customer ID",
-    output: "Normalized multipart payload & idempotency key",
-    responsibility: "Holds API keys server-side, enforces consent checks, and caches repeat clips.",
-  },
-  {
-    id: "engines",
-    title: "Aletheia + Eidos + risk index",
-    tag: "BUILT IN DEMO",
-    input: "Validated WAV segment + enrolled voiceprint reference",
-    output: "Synthetic likelihood, similarity (-1 to 1), and heuristic risk index",
-    responsibility: "DetectifAI hosted API evaluates voice authenticity & identity (audio retained 30 days).",
-  },
-  {
-    id: "decision",
-    title: "Decision",
-    tag: "BUILT IN DEMO",
-    input: "Aletheia verdict, Eidos match, and challenge liveness status",
-    output: "CONTINUE, STEP_UP, or END_CALL directive",
-    responsibility: "Enforces policy precedence: failed liveness overrides prior scores.",
-  },
-  {
-    id: "dashboard-guard",
-    title: "Agent dashboard and Bot Guard",
-    tag: "BUILT IN DEMO",
-    input: "Final decision, risk index, and liveness state",
-    output: "Operator controls, speech synthesis pause, and audit report",
-    responsibility: "Displays signal-not-proof verdicts and pauses automated bot speech on high risk.",
-  },
-];
-
-const REGISTRY_NODE: ArchNode = {
-  id: "threat-registry",
-  title: "Shared threat registry",
-  tag: "FUTURE",
-  input: "Anonymized synthetic vocoder signatures and confirmed replay patterns",
-  output: "Cross-institution risk advisories",
-  responsibility: "Planned consortium threat sharing without exposing raw customer voiceprints.",
-};
+import { Badge } from "../../components/ui/Badge";
 
 export const ArchitectureDiagram: React.FC = () => {
-  const [selectedNode, setSelectedNode] = useState<ArchNode>(PIPELINE_NODES[3]);
-
-  const badgeVariant = (tag: NodeTag) =>
-    tag === "BUILT IN DEMO" ? "success" : tag === "PROPOSED" ? "warning" : "info";
-
-  const renderNodeButton = (node: ArchNode) => {
-    const isSelected = selectedNode.id === node.id;
-    return (
-      <button
-        key={node.id}
-        type="button"
-        onClick={() => setSelectedNode(node)}
-        onFocus={() => setSelectedNode(node)}
-        className={`text-left p-4 rounded-[12px] border transition-colors cursor-pointer min-w-[170px] flex-1 focus-visible:ring-2 focus-visible:ring-[var(--brand-steel)] ${
-          isSelected
-            ? "bg-[var(--fill-subtle)] border-[var(--brand-steel)] ring-1 ring-[var(--brand-steel)]"
-            : "bg-[var(--surface)] border-[var(--border)] hover:bg-[var(--fill-subtle)]"
-        }`}
-      >
-        <Badge variant={badgeVariant(node.tag)} size="sm" className="mb-2">
-          {node.tag}
-        </Badge>
-        <p className="font-semibold text-[15px] text-[var(--text-primary)] leading-snug">
-          {node.title}
-        </p>
-      </button>
-    );
-  };
+  const nodes = [
+    {
+      icon: PhoneIncoming,
+      title: "1. Inbound Customer Call",
+      desc: "SIP / PSTN / WebRTC caller audio arrives with claimed account ID.",
+      tag: "PROPOSED",
+      variant: "neutral" as const,
+    },
+    {
+      icon: Server,
+      title: "2. Bank Telephony / PBX",
+      desc: "Session border controller forks real-time 16 kHz mono PCM stream.",
+      tag: "PROPOSED",
+      variant: "neutral" as const,
+    },
+    {
+      icon: Cpu,
+      title: "3. AEGIS Audio & WS Gateway",
+      desc: "FastAPI WebSocket & AudioWorklet ingest, quality gate, & live ASR.",
+      tag: "LIVE",
+      variant: "info" as const,
+    },
+    {
+      icon: ShieldCheck,
+      title: "4. L1–L4 Signal Pipeline",
+      desc: "L1 Aletheia (deepfake) + L2 Eidos (voiceprint) + L3 Script + L4 Manipulation.",
+      tag: "LIVE",
+      variant: "success" as const,
+    },
+    {
+      icon: Bot,
+      title: "5. Trust Fusion & Bot Guard",
+      desc: "Configurable weighted fusion, EMA smoothing, overrides & challenge liveness.",
+      tag: "LIVE",
+      variant: "success" as const,
+    },
+    {
+      icon: Headphones,
+      title: "6. Branch / SOC Agent",
+      desc: "Receives ALLOW / STEP_UP / BLOCK decision, audit report & takeover handoff.",
+      tag: "LIVE / PROPOSED",
+      variant: "info" as const,
+    },
+  ];
 
   return (
-    <div className="space-y-6">
-      <Banner variant="warn">{copy.deployment.proposedBanner}</Banner>
+    <Card className="space-y-6">
+      <div className="space-y-2">
+        <h1 className="page-title">AEGIS Deployment Architecture</h1>
+        <p className="body-text">
+          End-to-end banking fraud-defense topology mapping implemented local/cloud modules versus
+          proposed enterprise telephony integration.
+        </p>
+      </div>
 
-      {/* Main Horizontal Flow */}
-      <Card className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="section-title">Call Security Topology</h2>
-          <span className="caption-text">{copy.deployment.retentionNote}</span>
-        </div>
+      <Banner variant="warn" title="Proposed Integration Boundary">
+        Nodes 1 and 2 (carrier SIP / Bank PBX) represent proposed enterprise telephony integration
+        and are not connected to a live bank PBX in this console. Nodes 3 through 5 execute live
+        in this runtime against real DetectifAI & Gemini APIs.
+      </Banner>
 
-        <div className="flex flex-col lg:flex-row items-stretch lg:items-center gap-2 overflow-x-auto pb-2">
-          {PIPELINE_NODES.map((node, idx) => (
-            <React.Fragment key={node.id}>
-              {renderNodeButton(node)}
-              {idx < PIPELINE_NODES.length - 1 && (
-                <ArrowRight className="w-5 h-5 text-[var(--text-muted)] shrink-0 self-center rotate-90 lg:rotate-0" />
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 items-stretch">
+        {nodes.map((node, idx) => {
+          const Icon = node.icon;
+          return (
+            <div key={node.title} className="relative flex flex-col">
+              <div className="flex-1 p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] flex flex-col justify-between gap-3">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="w-9 h-9 rounded-lg bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center text-[var(--brand-steel)]">
+                      <Icon className="w-5 h-5" />
+                    </div>
+                    <Badge variant={node.variant}>{node.tag}</Badge>
+                  </div>
+                  <h3 className="text-[15px] font-bold text-[var(--text-primary)]">
+                    {node.title}
+                  </h3>
+                  <p className="caption-text leading-relaxed">{node.desc}</p>
+                </div>
+              </div>
+              {idx < nodes.length - 1 && (
+                <div className="hidden lg:flex absolute -right-3 top-1/2 -translate-y-1/2 z-10 w-6 h-6 rounded-full bg-[var(--surface)] border border-[var(--border)] items-center justify-center text-[var(--brand-steel)]">
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </div>
               )}
-            </React.Fragment>
-          ))}
-        </div>
-
-        {/* Separate Shared Threat Registry Node */}
-        <div className="pt-3 border-t border-[var(--border)] flex items-center gap-3">
-          <Database className="w-5 h-5 text-[var(--brand-steel)] shrink-0" />
-          <div className="max-w-xs w-full">{renderNodeButton(REGISTRY_NODE)}</div>
-        </div>
-      </Card>
-
-      {/* Selected Node Inspection Panel */}
-      <Card className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] pb-3">
-          <div className="flex items-center gap-2">
-            <Shield className="w-5 h-5 text-[var(--brand-steel)]" />
-            <h3 className="section-title">{selectedNode.title}</h3>
-          </div>
-          <Badge variant={badgeVariant(selectedNode.tag)}>{selectedNode.tag}</Badge>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-[14px]">
-          <div className="p-3 bg-[var(--fill-subtle)] rounded-lg border border-[var(--border)]">
-            <span className="caption-text font-semibold block mb-1">
-              {copy.deployment.inputLabel}
-            </span>
-            <p className="text-[var(--text-primary)]">{selectedNode.input}</p>
-          </div>
-          <div className="p-3 bg-[var(--fill-subtle)] rounded-lg border border-[var(--border)]">
-            <span className="caption-text font-semibold block mb-1">
-              {copy.deployment.outputLabel}
-            </span>
-            <p className="text-[var(--text-primary)]">{selectedNode.output}</p>
-          </div>
-          <div className="p-3 bg-[var(--fill-subtle)] rounded-lg border border-[var(--border)]">
-            <span className="caption-text font-semibold block mb-1">
-              {copy.deployment.responsibilityLabel}
-            </span>
-            <p className="text-[var(--text-primary)]">{selectedNode.responsibility}</p>
-          </div>
-        </div>
-      </Card>
-    </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
   );
 };

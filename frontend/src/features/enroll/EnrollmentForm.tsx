@@ -3,11 +3,10 @@ import { CheckCircle2, AlertCircle } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Banner } from "../../components/ui/Banner";
-import { Tooltip } from "../../components/ui/Tooltip";
 import { SampleRecorder, type SampleValue } from "./SampleRecorder";
 import { copy, getError } from "../../copy";
 import { aegisApi } from "../../lib/api";
-import type { ApiError, Voiceprint } from "../../types";
+import type { ApiError, VoiceprintRecord } from "../../types";
 
 export interface EnrollmentFormProps {
   onSuccess: () => void;
@@ -20,12 +19,12 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
 }) => {
   const [customerId, setCustomerId] = useState("");
   const [customerName, setCustomerName] = useState("");
+  const [accountTier, setAccountTier] = useState("Private Banking");
   const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [primarySample, setPrimarySample] = useState<SampleValue | null>(null);
-  const [secondSample, setSecondSample] = useState<SampleValue | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [enrolledRecord, setEnrolledRecord] = useState<Voiceprint | null>(null);
+  const [enrolledRecord, setEnrolledRecord] = useState<VoiceprintRecord | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -34,7 +33,7 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
       return;
     }
     if (!primarySample) {
-      setErrorMsg(copy.enroll.durationRuleError);
+      setErrorMsg("Please record or upload a 20–30 s voice sample first.");
       return;
     }
     if (!customerId.trim() || !customerName.trim()) {
@@ -46,13 +45,13 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
     setIsSubmitting(true);
 
     try {
-      const record = await aegisApi.enrollVoiceprint({
-        audio: primarySample.blob,
-        secondAudio: secondSample?.blob,
-        claimed_user_id: customerId.trim().toUpperCase(),
-        user_name: customerName.trim(),
-        consent: true,
-        durationSeconds: primarySample.duration,
+      const record = await aegisApi.enrollVoiceprintAudio({
+        file: primarySample.blob,
+        customer_id: customerId.trim().toUpperCase(),
+        customer_name: customerName.trim(),
+        account_tier: accountTier,
+        consent_confirmed: true,
+        sample_duration_sec: primarySample.duration,
       });
       setEnrolledRecord(record);
       onSuccess();
@@ -71,9 +70,12 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
           <CheckCircle2 className="w-7 h-7" />
         </div>
         <h3 className="section-title text-[var(--decision-continue-text)]">
-          {enrolledRecord.id}: {copy.enroll.successSuffix}
+          {enrolledRecord.voiceprint_id}: {copy.enroll.successSuffix}
         </h3>
-        <p className="body-text">{copy.enroll.successDesc}</p>
+        <p className="body-text">
+          customer_id: <span className="font-mono font-semibold">{enrolledRecord.customer_id}</span> ·{" "}
+          provider_speaker_ref: <span className="font-mono">{enrolledRecord.provider_speaker_ref}</span>
+        </p>
         <div className="pt-2 flex justify-center gap-3">
           <Button
             variant="secondary"
@@ -82,7 +84,6 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
               setCustomerId("");
               setCustomerName("");
               setPrimarySample(null);
-              setSecondSample(null);
               setConsentConfirmed(false);
             }}
           >
@@ -113,7 +114,7 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
       )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-[14px] font-semibold text-[var(--text-primary)] mb-1">
               {copy.enroll.customerIdLabel}
@@ -121,13 +122,12 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
             <input
               type="text"
               required
-              placeholder={copy.enroll.customerIdPlaceholder}
               value={customerId}
               onChange={(e) => setCustomerId(e.target.value)}
+              placeholder="CUST-5510-USER"
               className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-[14px] bg-[var(--surface)]"
             />
           </div>
-
           <div>
             <label className="block text-[14px] font-semibold text-[var(--text-primary)] mb-1">
               {copy.enroll.customerNameLabel}
@@ -135,9 +135,20 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
             <input
               type="text"
               required
-              placeholder={copy.enroll.customerNamePlaceholder}
               value={customerName}
               onChange={(e) => setCustomerName(e.target.value)}
+              placeholder="Full Name"
+              className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-[14px] bg-[var(--surface)]"
+            />
+          </div>
+          <div>
+            <label className="block text-[14px] font-semibold text-[var(--text-primary)] mb-1">
+              Account Tier
+            </label>
+            <input
+              type="text"
+              value={accountTier}
+              onChange={(e) => setAccountTier(e.target.value)}
               className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-[14px] bg-[var(--surface)]"
             />
           </div>
@@ -150,37 +161,21 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
           requiredDuration={true}
         />
 
-        <SampleRecorder
-          label={copy.enroll.secondSampleLabel}
-          sample={secondSample}
-          onChange={setSecondSample}
-          requiredDuration={false}
-        />
-
-        <div className="p-3.5 bg-[var(--fill-subtle)] rounded-lg border border-[var(--border)] flex items-start gap-3">
+        <label className="flex items-start gap-3 p-3.5 rounded-lg border border-[var(--border)] bg-[var(--fill-subtle)] cursor-pointer text-[14px]">
           <input
             type="checkbox"
-            id="biometric-consent"
             checked={consentConfirmed}
             onChange={(e) => setConsentConfirmed(e.target.checked)}
-            className="mt-1 w-4 h-4 rounded border-[var(--border)] text-[var(--brand-navy)] cursor-pointer"
+            className="w-4 h-4 mt-0.5 accent-[var(--brand-navy)]"
           />
-          <label htmlFor="biometric-consent" className="text-[14px] text-[var(--text-primary)] cursor-pointer">
-            {copy.enroll.consentCheckbox}
-          </label>
-          <Tooltip content={copy.tooltips.voiceprintConsent} />
-        </div>
+          <span className="text-[var(--text-primary)]">{copy.enroll.consentCheckbox}</span>
+        </label>
 
-        <Button
-          type="submit"
-          variant="primary"
-          size="lg"
-          className="w-full"
-          loading={isSubmitting}
-          disabled={isSubmitting || !consentConfirmed || !primarySample}
-        >
-          {isSubmitting ? copy.enroll.enrollingButton : copy.enroll.submitButton}
-        </Button>
+        <div className="flex justify-end">
+          <Button type="submit" variant="primary" loading={isSubmitting}>
+            {copy.enroll.submitButton}
+          </Button>
+        </div>
       </form>
     </Card>
   );

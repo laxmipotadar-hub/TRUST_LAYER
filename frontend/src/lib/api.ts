@@ -1,84 +1,44 @@
 import type {
-  AnalyzeResponse,
-  ApiError,
+  CallFeedbackRecord,
   CallReportResponse,
-  ChallengeStartResponse,
+  CallSession,
+  ChallengeSession,
   ChallengeVerifyResponse,
+  CreditsResponse,
+  ExecutionMode,
   HealthResponse,
-  UsageResponse,
-  Voiceprint,
+  ScenarioDefinition,
+  SecretsStatusResponse,
+  SettingsResponse,
+  ThreatRegistryEntry,
+  ThreatRegistryResponse,
+  UnifiedCallAnalysisResponse,
+  UsageSummaryResponse,
+  VoiceprintRecord,
+  VoiceprintVerifyResponse,
 } from "../types";
-import { S1, S2, S3, S4, INITIAL_USAGE, INITIAL_VOICEPRINTS } from "../mocks/fixtures";
-import { getError } from "../copy";
-import {
-  isValidAnalyzeResponse,
-  isValidChallengeStart,
-  isValidChallengeVerify,
-  isValidUsageResponse,
-  isValidVoiceprintList,
-} from "./validate";
 
 const RAW_BASE = (import.meta.env.VITE_API_BASE || "").replace(/\/+$/, "");
-const API_MODE = (import.meta.env.VITE_API_MODE || "mock").toLowerCase();
 
-function apiUrl(path: string): string {
+export function apiUrl(path: string): string {
   if (!RAW_BASE) return `/api${path}`;
   return RAW_BASE.endsWith("/api") ? `${RAW_BASE}${path}` : `${RAW_BASE}/api${path}`;
 }
 
-export interface ExtendedApiError extends ApiError {
-  rawPayload?: unknown;
-}
-
-export interface ExtendedHealthResponse extends HealthResponse {
-  key_not_set?: boolean;
-}
-
-// Runtime fallback flag when live backend is unreachable
-let forceDemoFallback = false;
-
-export function setDemoFallback(enabled: boolean) {
-  forceDemoFallback = enabled;
-}
-
-export function isUsingMock(): boolean {
-  return API_MODE !== "live" || forceDemoFallback;
-}
-
-const mockAnalysisCache = new Set<string>();
-const mockVoiceprints: Voiceprint[] = [...INITIAL_VOICEPRINTS];
-const mockUsage: UsageResponse = { ...INITIAL_USAGE };
-
-export function normalizeError(err: unknown): ExtendedApiError {
-  if (err && typeof err === "object") {
-    const maybe = err as {
-      code?: unknown;
-      message?: unknown;
-      rawPayload?: unknown;
-      error?: { code?: unknown; message?: unknown };
-    };
-    if (typeof maybe.code === "string" && typeof maybe.message === "string") {
-      return {
-        code: maybe.code,
-        message: getError(maybe.code, maybe.message),
-        rawPayload: maybe.rawPayload,
-      };
-    }
-    if (
-      maybe.error &&
-      typeof maybe.error.code === "string" &&
-      typeof maybe.error.message === "string"
-    ) {
-      return {
-        code: maybe.error.code,
-        message: getError(maybe.error.code, maybe.error.message),
-      };
-    }
-    if (err instanceof Error) {
-      return { code: "network_error", message: getError("network_error", err.message) };
-    }
+export function wsUrl(path: string): string {
+  if (RAW_BASE.startsWith("http://") || RAW_BASE.startsWith("https://")) {
+    const wsProto = RAW_BASE.replace(/^http/, "ws");
+    return wsProto.endsWith("/api") ? `${wsProto}${path}` : `${wsProto}/api${path}`;
   }
-  return { code: "network_error", message: getError("network_error") };
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/api${path}`;
+}
+
+export interface ExtendedApiError {
+  code: string;
+  message: string;
+  status?: number;
+  rawPayload?: unknown;
 }
 
 async function parseErrorResponse(res: Response): Promise<ExtendedApiError> {
@@ -86,13 +46,14 @@ async function parseErrorResponse(res: Response): Promise<ExtendedApiError> {
   try {
     errJson = await res.json();
   } catch {
-    // non-json error response
+    // ignore
   }
   const errObj = errJson?.error as { code?: string; message?: string } | undefined;
   if (errObj?.code) {
     return {
       code: errObj.code,
-      message: getError(errObj.code, errObj.message),
+      message: errObj.message || `Request failed (${res.status})`,
+      status: res.status,
       rawPayload: errJson,
     };
   }
@@ -100,372 +61,416 @@ async function parseErrorResponse(res: Response): Promise<ExtendedApiError> {
     return {
       code: `http_${res.status}`,
       message: errJson.detail,
+      status: res.status,
       rawPayload: errJson,
     };
   }
   return {
     code: `http_${res.status}`,
-    message: getError("server_busy", `Request failed with status ${res.status}`),
+    message: `Backend returned HTTP ${res.status}`,
+    status: res.status,
     rawPayload: errJson,
   };
 }
 
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(apiUrl(path), init);
+  } catch (err) {
+    throw {
+      code: "network_error",
+      message: err instanceof Error ? err.message : "Backend network connection lost.",
+    } satisfies ExtendedApiError;
+  }
+  if (!res.ok) throw await parseErrorResponse(res);
+  return (await res.json()) as T;
+}
+
 export const aegisApi = {
-  getMode(): "mock" | "live" {
-    return isUsingMock() ? "mock" : "live";
+  // System, Health, Settings, Secrets, Cache
+  async getHealth(): Promise<HealthResponse> {
+    const data = await fetchJson<HealthResponse>("/health");
+    return { ...data, backend_active: true };
   },
 
-  async getHealth(): Promise<ExtendedHealthResponse> {
-    if (API_MODE !== "live") {
-      return {
-        status: "ok",
-        mode: "DEMO",
-        version: "1.0.0",
-        timestamp: new Date().toISOString(),
-        backend_active: false,
-      };
-    }
+  async getSettings(): Promise<SettingsResponse> {
+    return fetchJson<SettingsResponse>("/settings");
+  },
 
-    try {
-      const res = await fetch(apiUrl("/health"));
-      if (!res.ok) {
-        forceDemoFallback = true;
-        return {
-          status: "offline",
-          mode: "DEMO",
-          version: "1.0.0",
-          timestamp: new Date().toISOString(),
-          backend_active: false,
-        };
-      }
-      const data = await res.json();
-      forceDemoFallback = false;
-      const keyNotSet =
-        data?.detectifai_configured === false ||
-        data?.key_status === "NOT SET";
-      return {
-        status: String(data?.status || "ok"),
-        mode: data?.mode || data?.app_mode || "REAL",
-        version: String(data?.version || "1.0.0"),
-        timestamp: data?.timestamp || new Date().toISOString(),
-        backend_active: true,
-        key_not_set: keyNotSet,
-      };
-    } catch {
-      forceDemoFallback = true;
-      return {
-        status: "offline",
-        mode: "DEMO",
-        version: "1.0.0",
-        timestamp: new Date().toISOString(),
-        backend_active: false,
-      };
-    }
+  async updateSettings(payload: Partial<{
+    app_mode: "DEMO" | "REAL";
+    cache_enabled: boolean;
+    bot_guard_enabled: boolean;
+    bot_guard_threshold: number;
+    layer_weights: Record<string, number>;
+    safe_threshold: number;
+    review_threshold: number;
+    ema_alpha: number;
+    language: string;
+  }>): Promise<SettingsResponse> {
+    return fetchJson<SettingsResponse>("/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getSecretsStatus(): Promise<SecretsStatusResponse> {
+    return fetchJson<SecretsStatusResponse>("/settings/secrets");
+  },
+
+  async updateSecrets(payload: {
+    detectif_api_key?: string;
+    gemini_api_key?: string;
+    detectif_api_base_url?: string;
+    gemini_model?: string;
+  }): Promise<SecretsStatusResponse> {
+    return fetchJson<SecretsStatusResponse>("/settings/secrets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async clearSecrets(): Promise<SecretsStatusResponse> {
+    return fetchJson<SecretsStatusResponse>("/settings/secrets", { method: "DELETE" });
+  },
+
+  async getCacheStats(): Promise<Record<string, unknown>> {
+    return fetchJson<Record<string, unknown>>("/cache/stats");
+  },
+
+  async clearCache(): Promise<{ cleared_entries: number }> {
+    return fetchJson<{ cleared_entries: number }>("/cache", { method: "DELETE" });
+  },
+
+  // Scenarios & Calls
+  async getScenarios(): Promise<ScenarioDefinition[]> {
+    return fetchJson<ScenarioDefinition[]>("/scenarios");
+  },
+
+  async runScenario(scenarioId: "S1" | "S2" | "S3" | "S4"): Promise<CallSession> {
+    return fetchJson<CallSession>("/scenarios/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scenario_id: scenarioId }),
+    });
+  },
+
+  async listCalls(limit = 30): Promise<CallSession[]> {
+    return fetchJson<CallSession[]>(`/calls?limit=${limit}`);
+  },
+
+  async getCurrentCall(): Promise<CallSession> {
+    return fetchJson<CallSession>("/calls/current");
+  },
+
+  async getCall(callId: string): Promise<CallSession> {
+    return fetchJson<CallSession>(`/calls/${encodeURIComponent(callId)}`);
   },
 
   async analyzeCall(params: {
-    audio?: Blob;
-    claimed_user_id?: string;
-    scenario_id?: string;
-  }): Promise<AnalyzeResponse> {
-    if (isUsingMock()) {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-
-      const cacheKey = params.scenario_id
-        ? `scenario_${params.scenario_id}`
-        : params.audio
-        ? `audio_${params.audio.size}_${params.audio.type}_${params.claimed_user_id || "guest"}`
-        : "default_s1";
-
-      const isCached = !forceDemoFallback && mockAnalysisCache.has(cacheKey);
-      const baseResult =
-        params.scenario_id === "S2"
-          ? S2
-          : params.scenario_id === "S3"
-          ? S3
-          : params.scenario_id === "S4"
-          ? S4
-          : S1;
-
-      if (isCached) {
-        const cachedResp: AnalyzeResponse = {
-          ...baseResult,
-          mode: "CACHED",
-          aletheia: { ...baseResult.aletheia, cost_credits: 0 },
-          eidos: { ...baseResult.eidos, cost_credits: 0 },
-        };
-        mockUsage.total_calls_analyzed += 1;
-        mockUsage.cache_hits += 1;
-        mockUsage.total_credits_saved +=
-          baseResult.aletheia.cost_credits + (baseResult.eidos.cost_credits || 0);
-        mockUsage.operations.unshift({
-          id: `${baseResult.aletheia.operation_id}_cached_${Date.now().toString().slice(-4)}`,
-          timestamp: new Date().toISOString(),
-          service: "pipeline",
-          cost_credits: 0,
-          mode: "CACHED",
-          call_id: baseResult.call_id,
-          cached: true,
-          status: "done",
-        });
-        return cachedResp;
-      }
-
-      mockAnalysisCache.add(cacheKey);
-      const demoResp: AnalyzeResponse = { ...baseResult, mode: "DEMO" };
-      const totalCost = demoResp.aletheia.cost_credits + (demoResp.eidos.cost_credits || 0);
-      mockUsage.total_calls_analyzed += 1;
-      mockUsage.total_credits_used += totalCost;
-      mockUsage.total_credits_saved += demoResp.credits_saved;
-      mockUsage.aletheia_calls += 1;
-      if (demoResp.eidos.status === "done") mockUsage.eidos_calls += 1;
-      if (typeof mockUsage.credit_balance === "number") {
-        mockUsage.credit_balance = Math.max(0, mockUsage.credit_balance - totalCost);
-      }
-      mockUsage.operations.unshift({
-        id: demoResp.aletheia.operation_id,
-        timestamp: new Date().toISOString(),
-        service: "aletheia",
-        cost_credits: demoResp.aletheia.cost_credits,
-        mode: "DEMO",
-        call_id: demoResp.call_id,
-        cached: false,
-        status: "done",
-      });
-      return demoResp;
+    file?: Blob;
+    filename?: string;
+    transcript_text?: string;
+    claimed_customer_id?: string;
+    caller_label?: string;
+    execution_mode: ExecutionMode;
+    duration_hint_sec?: number;
+    previous_score?: number | null;
+  }): Promise<UnifiedCallAnalysisResponse> {
+    const form = new FormData();
+    if (params.file) {
+      form.append("file", params.file, params.filename || "call_audio.wav");
     }
-
-    try {
-      const formData = new FormData();
-      if (params.audio) formData.append("audio", params.audio, "call_sample.wav");
-      if (params.claimed_user_id) formData.append("claimed_user_id", params.claimed_user_id);
-      if (params.scenario_id) formData.append("scenario_id", params.scenario_id);
-
-      const res = await fetch(apiUrl("/calls/analyze"), { method: "POST", body: formData });
-      if (!res.ok) throw await parseErrorResponse(res);
-
-      const data = await res.json();
-      if (!isValidAnalyzeResponse(data)) {
-        throw {
-          code: "unexpected_response",
-          message: getError("unexpected_response"),
-          rawPayload: data,
-        } satisfies ExtendedApiError;
-      }
-      return data;
-    } catch (err) {
-      throw normalizeError(err);
+    form.append("transcript_text", params.transcript_text || "");
+    form.append("claimed_customer_id", params.claimed_customer_id || "CUST-4821-MARCUS");
+    form.append("caller_label", params.caller_label || "Live Call Analysis");
+    form.append("execution_mode", params.execution_mode);
+    if (params.duration_hint_sec !== undefined) {
+      form.append("duration_hint_sec", String(params.duration_hint_sec));
     }
+    if (params.previous_score !== undefined && params.previous_score !== null) {
+      form.append("previous_score", String(params.previous_score));
+    }
+    return fetchJson<UnifiedCallAnalysisResponse>("/calls/analyze", {
+      method: "POST",
+      body: form,
+    });
   },
 
-  async getVoiceprints(): Promise<Voiceprint[]> {
-    if (isUsingMock()) return [...mockVoiceprints];
-    try {
-      const res = await fetch(apiUrl("/voiceprints"));
-      if (!res.ok) throw await parseErrorResponse(res);
-      const data = await res.json();
-      if (!isValidVoiceprintList(data)) {
-        throw {
-          code: "unexpected_response",
-          message: getError("unexpected_response"),
-          rawPayload: data,
-        } satisfies ExtendedApiError;
-      }
-      return data;
-    } catch (err) {
-      throw normalizeError(err);
-    }
+  async postCallAction(
+    callId: string,
+    action: string,
+    operatorNote = ""
+  ): Promise<{ call_id: string; updated_status: string }> {
+    return fetchJson(`/calls/${encodeURIComponent(callId)}/action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, operator_note: operatorNote }),
+    });
   },
 
-  async enrollVoiceprint(params: {
-    audio: Blob;
-    secondAudio?: Blob;
-    claimed_user_id: string;
-    user_name: string;
-    consent: boolean;
-    durationSeconds?: number;
-  }): Promise<Voiceprint> {
-    if (!params.consent) {
-      throw { code: "invalid_payload", message: "Explicit customer biometric consent is required." };
-    }
-
-    if (isUsingMock()) {
-      await new Promise((r) => setTimeout(r, 600));
-      const record: Voiceprint = {
-        id: `VP-${Math.floor(100 + Math.random() * 900)}`,
-        claimed_user_id: params.claimed_user_id.toUpperCase(),
-        user_name: params.user_name,
-        enrolled_at: new Date().toISOString(),
-        status: "active",
-        consent_given: true,
-        sample_duration_seconds: params.durationSeconds ?? 24.0,
-      };
-      mockVoiceprints.unshift(record);
-      return record;
-    }
-
-    try {
-      const form = new FormData();
-      form.append("audio", params.audio, "enrollment.wav");
-      if (params.secondAudio) form.append("second_audio", params.secondAudio, "enrollment_2.wav");
-      form.append("claimed_user_id", params.claimed_user_id);
-      form.append("user_name", params.user_name);
-      form.append("consent", "true");
-
-      const res = await fetch(apiUrl("/voiceprints/enroll"), { method: "POST", body: form });
-      if (!res.ok) throw await parseErrorResponse(res);
-      const data = await res.json();
-      if (!data || typeof data.id !== "string") {
-        throw {
-          code: "unexpected_response",
-          message: getError("unexpected_response"),
-          rawPayload: data,
-        } satisfies ExtendedApiError;
-      }
-      return data as Voiceprint;
-    } catch (err) {
-      throw normalizeError(err);
-    }
+  async postCallFeedback(
+    callId: string,
+    payload: { is_scam: boolean | null; label: "SCAM" | "LEGITIMATE" | "UNCERTAIN"; notes: string }
+  ): Promise<CallSession> {
+    return fetchJson<CallSession>(`/calls/${encodeURIComponent(callId)}/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
   },
 
-  async deleteVoiceprint(id: string): Promise<void> {
-    if (isUsingMock()) {
-      await new Promise((r) => setTimeout(r, 500));
-      const vp = mockVoiceprints.find((item) => item.id === id);
-      if (vp) vp.status = "revoked";
-      return;
-    }
-    try {
-      const res = await fetch(apiUrl(`/voiceprints/${encodeURIComponent(id)}`), {
-        method: "DELETE",
-      });
-      if (!res.ok) throw await parseErrorResponse(res);
-    } catch (err) {
-      throw normalizeError(err);
-    }
+  async getCallReport(callId: string): Promise<CallReportResponse> {
+    return fetchJson<CallReportResponse>(`/calls/${encodeURIComponent(callId)}/report`);
   },
 
-  async getUsage(): Promise<UsageResponse> {
-    if (isUsingMock()) {
-      return { ...mockUsage, operations: [...mockUsage.operations] };
-    }
-    try {
-      const res = await fetch(apiUrl("/usage"));
-      if (!res.ok) throw await parseErrorResponse(res);
-      const data = await res.json();
-      if (!isValidUsageResponse(data)) {
-        throw {
-          code: "unexpected_response",
-          message: getError("unexpected_response"),
-          rawPayload: data,
-        } satisfies ExtendedApiError;
-      }
-      return data;
-    } catch (err) {
-      throw normalizeError(err);
-    }
+  async listReports(limit = 30): Promise<CallReportResponse[]> {
+    return fetchJson<CallReportResponse[]>(`/reports?limit=${limit}`);
   },
 
-  async startChallenge(): Promise<ChallengeStartResponse> {
-    if (isUsingMock()) {
-      return {
-        challenge_id: `chal_${Date.now().toString().slice(-6)}`,
-        nonce: Math.random().toString(36).substring(2, 9).toUpperCase(),
-        phrase: "cobalt mango seven",
-        expires_in_seconds: 10,
-      };
-    }
-    try {
-      const res = await fetch(apiUrl("/challenge/start"), { method: "POST" });
-      if (!res.ok) throw await parseErrorResponse(res);
-      const data = await res.json();
-      if (!isValidChallengeStart(data)) {
-        throw {
-          code: "unexpected_response",
-          message: getError("unexpected_response"),
-          rawPayload: data,
-        } satisfies ExtendedApiError;
-      }
-      return data;
-    } catch (err) {
-      throw normalizeError(err);
-    }
+  // Voiceprints
+  async getVoiceprints(): Promise<VoiceprintRecord[]> {
+    return fetchJson<VoiceprintRecord[]>("/voiceprints");
   },
 
-  async verifyChallenge(params: {
+  async enrollVoiceprintAudio(params: {
+    file: Blob;
+    customer_id: string;
+    customer_name: string;
+    account_tier?: string;
+    enrollment_purpose?: string;
+    consent_confirmed: boolean;
+    sample_duration_sec: number;
+  }): Promise<VoiceprintRecord> {
+    const form = new FormData();
+    form.append("file", params.file, "enroll.wav");
+    form.append("customer_id", params.customer_id);
+    form.append("customer_name", params.customer_name);
+    form.append("account_tier", params.account_tier || "Private Banking");
+    form.append(
+      "enrollment_purpose",
+      params.enrollment_purpose || "Banking Call Authentication & Fraud Prevention"
+    );
+    form.append("consent_confirmed", params.consent_confirmed ? "true" : "false");
+    form.append("sample_duration_sec", String(params.sample_duration_sec));
+    return fetchJson<VoiceprintRecord>("/voiceprints/enroll-audio", {
+      method: "POST",
+      body: form,
+    });
+  },
+
+  async verifyVoiceprint(params: {
+    file?: Blob;
+    claimed_customer_id: string;
+    simulate_outcome?: "match" | "mismatch";
+  }): Promise<VoiceprintVerifyResponse> {
+    const form = new FormData();
+    if (params.file) form.append("file", params.file, "verify.wav");
+    form.append("claimed_customer_id", params.claimed_customer_id);
+    form.append("simulate_outcome", params.simulate_outcome || "match");
+    return fetchJson<VoiceprintVerifyResponse>("/voiceprints/verify", {
+      method: "POST",
+      body: form,
+    });
+  },
+
+  async revokeVoiceprint(voiceprintId: string): Promise<VoiceprintRecord> {
+    return fetchJson<VoiceprintRecord>(
+      `/voiceprints/${encodeURIComponent(voiceprintId)}/revoke`,
+      { method: "POST" }
+    );
+  },
+
+  async deleteVoiceprint(voiceprintId: string): Promise<{ deleted: boolean; voiceprint_id: string }> {
+    return fetchJson<{ deleted: boolean; voiceprint_id: string }>(
+      `/voiceprints/${encodeURIComponent(voiceprintId)}`,
+      { method: "DELETE" }
+    );
+  },
+
+  // Challenge Liveness
+  async startChallenge(callId?: string, customerId = "CUST-4821-MARCUS"): Promise<ChallengeSession> {
+    return fetchJson<ChallengeSession>("/challenge/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ call_id: callId || null, customer_id: customerId, window_seconds: 15 }),
+    });
+  },
+
+  async verifyChallengeAudio(params: {
     challenge_id: string;
-    nonce?: string;
-    audio?: Blob;
-    scenario_id?: string | null;
-    passed?: boolean;
+    spoken_response: string;
+    response_latency_ms: number;
+    capture_mode: string;
+    file?: Blob;
   }): Promise<ChallengeVerifyResponse> {
-    if (isUsingMock()) {
-      await new Promise((r) => setTimeout(r, 600));
-      const shouldPass =
-        params.passed !== undefined ? params.passed : params.scenario_id === "S3" ? false : true;
-      return {
-        status: shouldPass ? "passed" : "failed",
-        decision: shouldPass ? "CONTINUE" : "END_CALL",
-        challenge_id: params.challenge_id,
-        passed: shouldPass,
-        score: shouldPass ? 0.95 : 0.2,
-        latency_ms: 1100,
-        detail: shouldPass ? "Verified in window" : "Mismatch or replay anomaly",
-      };
-    }
-    try {
-      let res: Response;
-      if (params.audio) {
-        const formData = new FormData();
-        formData.append("challenge_id", params.challenge_id);
-        if (params.nonce) formData.append("nonce", params.nonce);
-        formData.append("audio", params.audio, "challenge.wav");
-        res = await fetch(apiUrl("/challenge/verify"), { method: "POST", body: formData });
-      } else {
-        res = await fetch(apiUrl("/challenge/verify"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(params),
-        });
-      }
-      if (!res.ok) throw await parseErrorResponse(res);
-      const data = await res.json();
-      if (!isValidChallengeVerify(data)) {
-        throw {
-          code: "unexpected_response",
-          message: getError("unexpected_response"),
-          rawPayload: data,
-        } satisfies ExtendedApiError;
-      }
-      return data;
-    } catch (err) {
-      throw normalizeError(err);
-    }
+    const form = new FormData();
+    form.append("challenge_id", params.challenge_id);
+    form.append("spoken_response", params.spoken_response);
+    form.append("response_latency_ms", String(params.response_latency_ms));
+    form.append("capture_mode", params.capture_mode);
+    if (params.file) form.append("file", params.file, "challenge.wav");
+    return fetchJson<ChallengeVerifyResponse>("/challenge/verify-audio", {
+      method: "POST",
+      body: form,
+    });
   },
 
-  async getCallReport(id: string): Promise<CallReportResponse> {
-    if (isUsingMock()) {
-      return {
-        call_id: id,
-        generated_at: new Date().toISOString(),
-        decision: S1.decision,
-        analysis: S1,
-        recommendations: [
-          "Sensitive actions still require OTP or a second factor.",
-          "Voice biometrics logged for fraud intelligence audit.",
-        ],
-        caller_info: {
-          claimed_user_id: "CUST-4821-MARCUS",
-          caller_name: "Marcus Aurelius",
-        },
-      };
-    }
-    try {
-      const res = await fetch(apiUrl(`/calls/${encodeURIComponent(id)}/report`));
-      if (!res.ok) throw await parseErrorResponse(res);
-      return await res.json();
-    } catch (err) {
-      throw normalizeError(err);
-    }
+  // Usage, Credits & CSV Export
+  async getCredits(): Promise<CreditsResponse> {
+    return fetchJson<CreditsResponse>("/credits");
+  },
+
+  async getUsage(includeProvider = true): Promise<UsageSummaryResponse> {
+    return fetchJson<UsageSummaryResponse>(`/usage?include_provider=${includeProvider}`);
+  },
+
+  getUsageCsvUrl(): string {
+    return apiUrl("/usage/export.csv");
+  },
+
+  // Threat Registry
+  async getThreatRegistry(category?: string): Promise<ThreatRegistryResponse> {
+    const q = category ? `?category=${encodeURIComponent(category)}` : "";
+    return fetchJson<ThreatRegistryResponse>(`/threat-registry${q}`);
+  },
+
+  async submitThreatRecord(payload: {
+    pattern_name: string;
+    raw_speaker_reference: string;
+    category: string;
+    severity: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+    evidence_reference: string;
+    indicators: string[];
+  }): Promise<ThreatRegistryEntry> {
+    return fetchJson<ThreatRegistryEntry>("/threat-registry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...payload, operator_authorized: true }),
+    });
+  },
+
+  async updateThreatStatus(
+    entryId: string,
+    verificationStatus: "PENDING REVIEW" | "CONFIRMED THREAT" | "MITIGATED"
+  ): Promise<ThreatRegistryEntry> {
+    return fetchJson<ThreatRegistryEntry>(`/threat-registry/${encodeURIComponent(entryId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ verification_status: verificationStatus }),
+    });
+  },
+
+  // Feedback helper type reference check
+  _feedbackTypeCheck(f: CallFeedbackRecord): CallFeedbackRecord {
+    return f;
   },
 };
+
+export interface LiveWsHandlers {
+  onStatus: (status: "connecting" | "connected" | "reconnecting" | "disconnected") => void;
+  onMessage: (payload: Record<string, unknown>) => void;
+  onError?: (err: string) => void;
+}
+
+export class LiveCallSocketClient {
+  private ws: WebSocket | null = null;
+  private closedByUser = false;
+  private retries = 0;
+  private seq = 0;
+  private pingTimer: number | null = null;
+  private reconnectTimer: number | null = null;
+  private handlers: LiveWsHandlers;
+
+  constructor(handlers: LiveWsHandlers) {
+    this.handlers = handlers;
+  }
+
+  connect(): void {
+    this.closedByUser = false;
+    this.openSocket();
+  }
+
+  private openSocket(): void {
+    this.handlers.onStatus(this.retries > 0 ? "reconnecting" : "connecting");
+    try {
+      const socket = new WebSocket(wsUrl("/ws/live-call"));
+      this.ws = socket;
+
+      socket.onopen = () => {
+        this.retries = 0;
+        this.handlers.onStatus("connected");
+        this.startHeartbeat();
+      };
+
+      socket.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(String(evt.data));
+          if (data && typeof data === "object") {
+            this.handlers.onMessage(data as Record<string, unknown>);
+          }
+        } catch {
+          // ignore malformed frames
+        }
+      };
+
+      socket.onerror = () => {
+        this.handlers.onError?.("WebSocket transport error");
+      };
+
+      socket.onclose = () => {
+        this.stopHeartbeat();
+        if (this.closedByUser) {
+          this.handlers.onStatus("disconnected");
+          return;
+        }
+        const delayMs = Math.min(8000, 600 * Math.pow(2, this.retries));
+        this.retries += 1;
+        this.handlers.onStatus("reconnecting");
+        this.reconnectTimer = window.setTimeout(() => this.openSocket(), delayMs);
+      };
+    } catch (err) {
+      this.handlers.onStatus("disconnected");
+      this.handlers.onError?.(err instanceof Error ? err.message : "Failed to open WebSocket");
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.pingTimer = window.setInterval(() => {
+      this.sendJson({ type: "ping" });
+    }, 5000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.pingTimer !== null) {
+      window.clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
+  sendJson(payload: Record<string, unknown>): number {
+    this.seq += 1;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ ...payload, seq: this.seq }));
+    }
+    return this.seq;
+  }
+
+  disconnect(): void {
+    this.closedByUser = true;
+    this.stopHeartbeat();
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    this.handlers.onStatus("disconnected");
+  }
+}

@@ -6,238 +6,275 @@ import { Banner } from "../../components/ui/Banner";
 import { copy } from "../../copy";
 import { aegisApi } from "../../lib/api";
 import { useRecorder } from "../../lib/audio";
-import type { ChallengeStartResponse } from "../../types";
+import type { CallSession, ChallengeSession, ChallengeVerifyResponse, ExecutionMode } from "../../types";
+
+interface SpeechRecognitionAlt {
+  transcript: string;
+}
+interface SpeechRecognitionResultList {
+  length: number;
+  [index: number]: { 0: SpeechRecognitionAlt };
+}
+interface BrowserSpeechRecognition {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((e: { results: SpeechRecognitionResultList }) => void) | null;
+  onerror: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+type SpeechCtor = new () => BrowserSpeechRecognition;
 
 export interface ChallengeModalProps {
   isOpen: boolean;
-  scenarioId: string | null;
+  callId?: string;
+  customerId?: string;
+  executionMode: ExecutionMode;
   onClose: () => void;
-  onOutcome: (status: "passed" | "failed" | "incomplete", detail?: string) => void;
+  onComplete: (resp: ChallengeVerifyResponse, updatedCall?: CallSession | null) => void;
 }
 
 export const ChallengeModal: React.FC<ChallengeModalProps> = ({
   isOpen,
-  scenarioId,
+  callId,
+  customerId = "CUST-4821-MARCUS",
+  executionMode,
   onClose,
-  onOutcome,
+  onComplete,
 }) => {
-  const [challengeData, setChallengeData] = useState<ChallengeStartResponse | null>(null);
-  const [timeLeft, setTimeLeft] = useState<number>(10);
-  const [incompleteReason, setIncompleteReason] = useState<string | null>(null);
+  const [challengeData, setChallengeData] = useState<ChallengeSession | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number>(15);
+  const [spokenTranscript, setSpokenTranscript] = useState("");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [verifyOutcome, setVerifyOutcome] = useState<ChallengeVerifyResponse | null>(null);
 
   const recorder = useRecorder();
-  const outcomeFiredRef = useRef(false);
+  const speechRef = useRef<BrowserSpeechRecognition | null>(null);
+  const startedAtRef = useRef<number>(Date.now());
 
   useEffect(() => {
     if (!isOpen) {
       recorder.cancelRecording();
-      setIncompleteReason(null);
-      setIsVerifying(false);
+      speechRef.current?.stop();
+      setErrorMsg(null);
+      setVerifyOutcome(null);
+      setSpokenTranscript("");
       return;
     }
 
-    outcomeFiredRef.current = false;
-    setIncompleteReason(null);
-    setTimeLeft(10);
+    setErrorMsg(null);
+    setVerifyOutcome(null);
+    setSpokenTranscript("");
 
     aegisApi
-      .startChallenge()
-      .then((data) => {
-        setChallengeData(data);
-        setTimeLeft(data.expires_in_seconds || 10);
+      .startChallenge(callId, customerId)
+      .then((res) => {
+        setChallengeData(res);
+        setTimeLeft(res.window_seconds || 15);
+        startedAtRef.current = Date.now();
       })
-      .catch(() => {
-        setIncompleteReason(copy.liveness.incompleteDetail);
-        onOutcome("incomplete", "Challenge start API error");
+      .catch((err) => {
+        setErrorMsg(err?.message || "Failed to start backend liveness challenge.");
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
+  }, [isOpen, callId, customerId]);
 
-  // 10s countdown timer; timeout -> Incomplete (never pass)
   useEffect(() => {
-    if (!isOpen || incompleteReason || isVerifying) return;
-    if (timeLeft <= 0) {
-      if (!outcomeFiredRef.current) {
-        outcomeFiredRef.current = true;
-        recorder.cancelRecording();
-        setIncompleteReason("10s challenge window timed out.");
-        onOutcome("incomplete", "Timeout after 10s");
-      }
-      return;
-    }
+    if (!isOpen || verifyOutcome || isVerifying || timeLeft <= 0) return;
     const timer = window.setInterval(() => {
-      setTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
+      setTimeLeft((prev) => Math.max(0, prev - 1));
     }, 1000);
     return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, timeLeft, incompleteReason, isVerifying]);
+  }, [isOpen, verifyOutcome, isVerifying, timeLeft]);
 
-  // Watch recorder errors (denied permission, unsupported browser, cut-off) -> Incomplete
-  useEffect(() => {
-    if (recorder.status === "error" && recorder.errorReason && !outcomeFiredRef.current) {
-      outcomeFiredRef.current = true;
-      const reason = `Microphone ${recorder.errorReason.toLowerCase().replace("_", " ")}`;
-      setIncompleteReason(reason);
-      onOutcome("incomplete", reason);
+  const handleStartMic = async () => {
+    setErrorMsg(null);
+    const win = window as unknown as {
+      SpeechRecognition?: SpeechCtor;
+      webkitSpeechRecognition?: SpeechCtor;
+    };
+    const Ctor = win.SpeechRecognition || win.webkitSpeechRecognition;
+    if (Ctor) {
+      try {
+        const rec = new Ctor();
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.lang = "en-US";
+        rec.onresult = (evt) => {
+          const words: string[] = [];
+          for (let i = 0; i < evt.results.length; i += 1) {
+            const t = evt.results[i]?.[0]?.transcript;
+            if (t) words.push(t);
+          }
+          setSpokenTranscript(words.join(" ").trim());
+        };
+        rec.start();
+        speechRef.current = rec;
+      } catch {
+        // fallback to audio upload alone
+      }
     }
-  }, [recorder.status, recorder.errorReason, onOutcome]);
+    await recorder.startRecording();
+  };
 
-  const submitVerification = async (params: { audio?: Blob; forcedPass?: boolean }) => {
-    if (!challengeData || outcomeFiredRef.current) return;
+  const submitChallenge = async (captureMode: string, customSpeech?: string, file?: Blob) => {
+    if (!challengeData || isVerifying) return;
     setIsVerifying(true);
-    recorder.setStatus("uploading");
+    setErrorMsg(null);
+    const latencyMs = Math.max(200, Date.now() - startedAtRef.current);
 
     try {
-      const res = await aegisApi.verifyChallenge({
+      const resp = await aegisApi.verifyChallengeAudio({
         challenge_id: challengeData.challenge_id,
-        nonce: challengeData.nonce,
-        audio: params.audio,
-        scenario_id: scenarioId,
-        passed: params.forcedPass,
+        spoken_response: customSpeech !== undefined ? customSpeech : spokenTranscript,
+        response_latency_ms: latencyMs,
+        capture_mode: captureMode,
+        file,
       });
-      outcomeFiredRef.current = true;
+      setVerifyOutcome(resp);
+      onComplete(resp, resp.updated_call);
+    } catch (err) {
+      const msg = (err as { message?: string })?.message || "Challenge verification failed.";
+      setErrorMsg(msg);
+    } finally {
       setIsVerifying(false);
-      onOutcome(res.status, res.detail);
-    } catch {
-      outcomeFiredRef.current = true;
-      setIsVerifying(false);
-      recorder.setStatus("idle");
-      setIncompleteReason("API verification error");
-      onOutcome("incomplete", "API verification error");
     }
   };
 
   const handleStopAndVerify = async () => {
-    const result = await recorder.stopRecording();
-    if (!result || result.blob.size === 0) {
-      if (!outcomeFiredRef.current) {
-        outcomeFiredRef.current = true;
-        setIncompleteReason("Recording cut off with no audio");
-        onOutcome("incomplete", "Cut-off recording");
-      }
+    speechRef.current?.stop();
+    const res = await recorder.stopRecording();
+    if (!res) {
+      setErrorMsg("No audio was recorded.");
       return;
     }
-    await submitVerification({ audio: result.blob });
+    await submitChallenge("LIVE_SPEECH_AUDIO", spokenTranscript || challengeData?.phrase || "", res.blob);
   };
-
-  const statusText =
-    recorder.status === "requesting_permission"
-      ? copy.liveness.requestingPermission
-      : recorder.status === "recording"
-      ? copy.liveness.recordingState
-      : recorder.status === "uploading" || isVerifying
-      ? copy.liveness.uploadingState
-      : null;
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
       title={copy.liveness.title}
-      subtitle={copy.liveness.subtitle}
-      footer={
-        <div className="w-full flex flex-wrap items-center justify-between gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            {copy.voiceprints.cancel}
-          </Button>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="danger"
-              size="sm"
-              disabled={isVerifying || !!incompleteReason}
-              onClick={() => submitVerification({ forcedPass: false })}
-              icon={<XCircle className="w-4 h-4" />}
-            >
-              {copy.liveness.simulateFail}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={isVerifying || !!incompleteReason}
-              onClick={() => submitVerification({ forcedPass: true })}
-              icon={<CheckCircle2 className="w-4 h-4" />}
-            >
-              {copy.liveness.simulatePass}
-            </Button>
-            {recorder.status === "recording" ? (
-              <Button
-                variant="primary"
-                size="sm"
-                loading={isVerifying}
-                onClick={handleStopAndVerify}
-                icon={<StopCircle className="w-4 h-4" />}
-              >
-                {copy.liveness.stopAndVerify}
-              </Button>
-            ) : (
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={isVerifying || !!incompleteReason}
-                onClick={() => recorder.startRecording()}
-                icon={<Mic className="w-4 h-4" />}
-              >
-                {copy.liveness.recordAndVerify}
-              </Button>
-            )}
-          </div>
-        </div>
-      }
+      subtitle="Fresh backend nonce + live 16 kHz microphone audio verification"
     >
       <div className="space-y-4">
-        <p className="text-[14px] text-[var(--text-secondary)]">
-          {copy.liveness.promptInstruction}
-        </p>
+        {errorMsg && <Banner variant="error">{errorMsg}</Banner>}
 
-        {/* Huge Nonce Phrase */}
-        <div className="p-5 bg-[var(--fill-subtle)] border-2 border-[var(--brand-steel)] rounded-[12px] text-center space-y-1">
-          <p className="text-[32px] sm:text-[36px] font-black text-[var(--text-primary)] tracking-tight leading-tight">
-            "{challengeData?.phrase || "cobalt mango seven"}"
+        <div className="p-5 rounded-xl bg-[var(--fill-subtle)] border border-[var(--border)] text-center space-y-2">
+          <p className="text-[14px] font-medium text-[var(--text-secondary)]">
+            {copy.liveness.promptInstruction}
+          </p>
+          <p className="text-[28px] font-extrabold text-[var(--brand-navy)] tracking-tight">
+            {challengeData?.phrase || "Loading phrase..."}
           </p>
         </div>
 
-        {/* 10s Countdown */}
-        <div className="flex items-center justify-between p-3 bg-[var(--fill-subtle)] rounded-lg text-[14px] border border-[var(--border)]">
-          <span className="flex items-center gap-1.5 text-[var(--text-secondary)] font-medium">
+        <div className="flex items-center justify-between text-[14px] px-1">
+          <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--text-primary)]">
             <Clock className="w-4 h-4 text-[var(--brand-steel)]" />
-            {copy.liveness.timerLabel}
+            {timeLeft}s remaining
           </span>
-          <span
-            className={`font-mono font-bold text-[16px] ${
-              timeLeft <= 3 ? "text-[var(--decision-endcall-solid)]" : "text-[var(--text-primary)]"
-            }`}
-          >
-            {timeLeft}s
+          <span className="font-mono text-[var(--text-muted)]">
+            {challengeData?.challenge_id || "—"}
           </span>
         </div>
 
-        {/* Level Meter & Recorder State */}
-        {statusText && (
-          <div className="space-y-2 p-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]">
-            <p className="text-[14px] font-semibold text-[var(--brand-steel)]">{statusText}</p>
-            <div className="w-full h-2.5 bg-[var(--fill-subtle)] rounded-full overflow-hidden border border-[var(--border)]">
-              <div
-                className="h-full bg-[var(--brand-steel)] transition-all duration-75"
-                style={{ width: `${recorder.level}%` }}
-              />
-            </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {recorder.status !== "recording" ? (
+            <Button
+              variant="primary"
+              disabled={isVerifying || !challengeData || timeLeft <= 0}
+              onClick={handleStartMic}
+              icon={<Mic className="w-4 h-4" />}
+            >
+              Start Microphone Reply
+            </Button>
+          ) : (
+            <Button
+              variant="danger"
+              disabled={isVerifying}
+              onClick={handleStopAndVerify}
+              icon={<StopCircle className="w-4 h-4" />}
+            >
+              Stop & Verify Audio ({recorder.level}%)
+            </Button>
+          )}
+        </div>
+
+        {spokenTranscript && (
+          <div className="p-3 rounded-lg bg-[var(--fill-subtle)] border border-[var(--border)] text-[14px]">
+            <span className="font-semibold text-[var(--text-secondary)]">Heard ASR: </span>
+            <span className="text-[var(--text-primary)]">{spokenTranscript}</span>
           </div>
         )}
 
-        {/* Incomplete State Banner */}
-        {incompleteReason && (
-          <Banner variant="warn" title={copy.liveness.incomplete}>
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>{incompleteReason} — {copy.liveness.incompleteDetail}</span>
-            </div>
-          </Banner>
+        {executionMode === "DEMO" && challengeData && !verifyOutcome && (
+          <div className="flex flex-wrap gap-2 pt-2 border-t border-[var(--border)]">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={isVerifying}
+              onClick={() => submitChallenge("SIMULATED_LIVE_PASS", challengeData.phrase)}
+            >
+              Simulate Live Pass (DEMO)
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={isVerifying}
+              onClick={() => submitChallenge("SIMULATED_REPLAY_FAIL", "recorded playback mismatch")}
+            >
+              Simulate Replay Attack (DEMO)
+            </Button>
+          </div>
         )}
 
-        <p className="caption-text italic text-[var(--text-muted)]">
-          {copy.liveness.caption}
-        </p>
+        {verifyOutcome && (
+          <div className="space-y-3 pt-2 border-t border-[var(--border)]">
+            <div
+              className={`p-3 rounded-lg border flex items-start gap-2.5 text-[14px] ${
+                verifyOutcome.passed
+                  ? "bg-[var(--decision-continue-tint)] border-[var(--decision-continue-border)] text-[var(--decision-continue-text)]"
+                  : "bg-[var(--decision-endcall-tint)] border-[var(--decision-endcall-border)] text-[var(--decision-endcall-text)]"
+              }`}
+            >
+              {verifyOutcome.passed ? (
+                <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" />
+              ) : (
+                <XCircle className="w-5 h-5 shrink-0 mt-0.5" />
+              )}
+              <div>
+                <p className="font-bold">{verifyOutcome.liveness_status}</p>
+                <p>{verifyOutcome.explanation}</p>
+              </div>
+            </div>
+
+            <ul className="space-y-1 text-[14px]">
+              {verifyOutcome.checks.map((chk) => (
+                <li key={chk.key} className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5">
+                    {chk.passed ? (
+                      <CheckCircle2 className="w-4 h-4 text-[var(--decision-continue-solid)]" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-[var(--decision-endcall-solid)]" />
+                    )}
+                    {chk.label}
+                  </span>
+                  <span className="text-[var(--text-muted)] truncate max-w-[210px]">{chk.detail}</span>
+                </li>
+              ))}
+            </ul>
+
+            <div className="flex justify-end">
+              <Button variant="primary" size="sm" onClick={onClose}>
+                Done
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </Modal>
   );

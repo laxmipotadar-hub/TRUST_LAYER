@@ -25,11 +25,15 @@ export const COPY = {
 
   navigation: {
     analyze: "Analyze",
+    liveDemo: "Live Demo",
+    intelligence: "Script & Manipulation",
+    trustScore: "Trust Score",
     voiceprints: "Voiceprints",
     reports: "Reports",
-    enroll: "Enroll",
     usage: "Usage",
+    settings: "Settings",
     deployment: "Deployment",
+    enroll: "Enroll",
     stage: "Stage Mode",
     openStage: "Open Stage Mode",
     collapseSidebar: "Collapse sidebar",

@@ -9,17 +9,21 @@ import {
   Network,
   Tv,
   Layers,
+  Mic,
+  FileSearch,
+  Sliders,
+  Settings,
 } from "lucide-react";
-import { ModeBadge } from "../components/ui/ModeBadge";
 import { Button } from "../components/ui/Button";
 import { Banner } from "../components/ui/Banner";
 import { copy } from "../copy";
 import { useAnalysis } from "../context/AnalysisContext";
+import type { ExecutionMode } from "../types";
 
 export const AppShell: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { currentAnalysis, healthBanner } = useAnalysis();
+  const { executionMode, setExecutionMode, health, credits, backendOffline } = useAnalysis();
 
   const getPageTitle = () => {
     if (location.pathname.startsWith("/reports")) return copy.reports.pageTitle;
@@ -27,12 +31,20 @@ export const AppShell: React.FC = () => {
       case "/":
       case "/analyze":
         return copy.navigation.analyze;
+      case "/live-demo":
+        return copy.navigation.liveDemo;
+      case "/intelligence":
+        return copy.navigation.intelligence;
+      case "/trust-score":
+        return copy.navigation.trustScore;
       case "/voiceprints":
         return copy.voiceprints.pageTitle;
       case "/usage":
         return copy.usage.pageTitle;
       case "/deployment":
         return copy.deployment.pageTitle;
+      case "/settings":
+        return copy.navigation.settings;
       case "/enroll":
         return copy.enroll.pageTitle;
       case "/stage":
@@ -45,21 +57,23 @@ export const AppShell: React.FC = () => {
   };
 
   const navItems = [
+    { to: "/live-demo", label: copy.navigation.liveDemo, icon: <Mic className="w-5 h-5 shrink-0" /> },
     { to: "/analyze", label: copy.navigation.analyze, icon: <Radio className="w-5 h-5 shrink-0" /> },
+    { to: "/intelligence", label: copy.navigation.intelligence, icon: <FileSearch className="w-5 h-5 shrink-0" /> },
+    { to: "/trust-score", label: copy.navigation.trustScore, icon: <Sliders className="w-5 h-5 shrink-0" /> },
     { to: "/voiceprints", label: copy.navigation.voiceprints, icon: <Users className="w-5 h-5 shrink-0" /> },
     { to: "/reports", label: copy.navigation.reports, icon: <FileText className="w-5 h-5 shrink-0" /> },
     { to: "/usage", label: copy.navigation.usage, icon: <BarChart3 className="w-5 h-5 shrink-0" /> },
     { to: "/deployment", label: copy.navigation.deployment, icon: <Network className="w-5 h-5 shrink-0" /> },
+    { to: "/settings", label: copy.navigation.settings, icon: <Settings className="w-5 h-5 shrink-0" /> },
   ];
 
-  const currentMode = currentAnalysis?.mode || "DEMO";
+  const modes: ExecutionMode[] = ["LIVE", "CACHED", "DEMO"];
 
   return (
     <div className="min-h-screen bg-[var(--bg-page)] text-[var(--text-primary)] flex">
-      {/* Left Sidebar: 240px on wide screens, collapses to 64px icon rail on narrow screens */}
-      <aside className="sticky top-0 h-screen w-16 md:w-[240px] bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between shrink-0 transition-all duration-200">
-        <div>
-          {/* Brand / Logo */}
+      <aside className="sticky top-0 h-screen w-16 md:w-[244px] bg-[var(--surface)] border-r border-[var(--border)] flex flex-col justify-between shrink-0 transition-all duration-200">
+        <div className="overflow-y-auto">
           <div className="h-16 border-b border-[var(--border)] flex items-center px-4 md:px-5 gap-3">
             <div className="w-9 h-9 rounded-lg bg-[var(--brand-navy)] text-white flex items-center justify-center font-bold text-[18px] shrink-0 shadow-xs">
               <ShieldCheck className="w-5 h-5 text-white" />
@@ -68,20 +82,19 @@ export const AppShell: React.FC = () => {
               <span className="font-bold text-[18px] tracking-tight text-[var(--brand-navy)] block truncate">
                 {copy.app.name}
               </span>
-              <p className="text-[12px] text-[var(--text-muted)] leading-none mt-0.5 truncate">
+              <p className="text-[14px] text-[var(--text-muted)] leading-none mt-0.5 truncate">
                 {copy.app.hackathonLabel}
               </p>
             </div>
           </div>
 
-          {/* 4 Nav Items */}
           <nav className="p-2 md:p-3 space-y-1">
             {navItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2.5 rounded-lg text-[15px] font-medium transition-colors justify-center md:justify-start ${
+                  `flex items-center gap-3 px-3 py-2 rounded-lg text-[14px] font-medium transition-colors justify-center md:justify-start ${
                     isActive
                       ? "bg-[var(--fill-subtle)] text-[var(--brand-steel)] font-semibold border-l-0 md:border-l-4 border-[var(--brand-steel)] md:pl-2.5"
                       : "text-[var(--text-secondary)] hover:bg-[var(--fill-subtle)] hover:text-[var(--text-primary)]"
@@ -96,12 +109,11 @@ export const AppShell: React.FC = () => {
           </nav>
         </div>
 
-        {/* Footer in Sidebar */}
         <div className="p-2 md:p-3 border-t border-[var(--border)] space-y-1">
           <NavLink
             to="/kit"
             className={({ isActive }) =>
-              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-colors justify-center md:justify-start ${
+              `flex items-center gap-2.5 px-3 py-2 rounded-lg text-[14px] font-medium transition-colors justify-center md:justify-start ${
                 isActive
                   ? "bg-[var(--fill-subtle)] text-[var(--brand-steel)] font-semibold"
                   : "text-[var(--text-muted)] hover:bg-[var(--fill-subtle)] hover:text-[var(--text-primary)]"
@@ -115,21 +127,46 @@ export const AppShell: React.FC = () => {
         </div>
       </aside>
 
-      {/* Main Container */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Top Header Bar */}
-        <header className="sticky top-0 z-30 h-14 bg-[var(--surface)] border-b border-[var(--border)] px-4 sm:px-6 flex items-center justify-between gap-4">
+        <header className="sticky top-0 z-30 h-16 bg-[var(--surface)] border-b border-[var(--border)] px-4 sm:px-6 flex items-center justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-[20px] font-bold text-[var(--text-primary)] truncate">
               {getPageTitle()}
             </h1>
           </div>
 
-          <div className="flex items-center gap-3 sm:gap-4 shrink-0">
-            <span className="caption-text font-medium text-[var(--text-secondary)] hidden sm:inline">
-              {copy.app.poweredBy}
-            </span>
-            <ModeBadge mode={currentMode} />
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3 shrink-0">
+            {credits?.configured && credits.available !== null && (
+              <span className="hidden lg:inline-flex items-center px-2.5 py-1 rounded-full bg-[var(--fill-subtle)] border border-[var(--border)] text-[14px] font-mono font-semibold text-[var(--text-primary)]">
+                {credits.available.toLocaleString()} credits
+              </span>
+            )}
+
+            <div
+              role="group"
+              aria-label="Execution mode switch"
+              className="inline-flex rounded-lg border border-[var(--border)] bg-[var(--fill-subtle)] p-0.5"
+            >
+              {modes.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => void setExecutionMode(m)}
+                  className={`px-2.5 py-1 rounded-md text-[14px] font-semibold transition-colors cursor-pointer ${
+                    executionMode === m
+                      ? m === "DEMO"
+                        ? "bg-[var(--mode-demo-bg)] text-[var(--mode-demo-text)]"
+                        : m === "CACHED"
+                        ? "bg-white text-[var(--brand-steel)] shadow-xs"
+                        : "bg-[var(--brand-navy)] text-white"
+                      : "text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+
             <Button
               variant="secondary"
               size="sm"
@@ -144,14 +181,25 @@ export const AppShell: React.FC = () => {
           </div>
         </header>
 
-        {/* Main Content Area: Centred, max 1200px */}
         <main className="flex-1 p-4">
           <div className="max-w-[1200px] mx-auto w-full space-y-3">
-            {healthBanner.backendUnavailable && (
-              <Banner variant="warn">{copy.health.backendUnavailable}</Banner>
+            {backendOffline && (
+              <Banner variant="error">
+                Backend connection lost — scoring paused. Check that FastAPI is running on port 8000.
+              </Banner>
             )}
-            {healthBanner.keyNotSet && (
-              <Banner variant="warn">{copy.health.apiKeyNotSet}</Banner>
+            {!backendOffline && health && !health.detectifai_configured && executionMode === "LIVE" && (
+              <Banner variant="warn">
+                DetectifAI API key is NOT SET on the backend server. Configure keys in{" "}
+                <button
+                  type="button"
+                  onClick={() => navigate("/settings")}
+                  className="underline font-bold cursor-pointer"
+                >
+                  Settings
+                </button>{" "}
+                before running LIVE microphone analysis.
+              </Banner>
             )}
             <Outlet />
           </div>

@@ -4,18 +4,26 @@ import { Card } from "../../components/ui/Card";
 import { Badge } from "../../components/ui/Badge";
 import { copy } from "../../copy";
 import { formatSimilarity } from "../../lib/format";
-import type { CallerMetaState } from "../../context/AnalysisContext";
-import type { EidosResult } from "../../types";
+import type { CallSession, VoiceprintRecord } from "../../types";
 
 export interface CallerCardProps {
-  callerMeta: CallerMetaState;
-  eidos?: EidosResult;
+  call: CallSession | null;
+  voiceprints: VoiceprintRecord[];
 }
 
-export const CallerCard: React.FC<CallerCardProps> = ({ callerMeta, eidos }) => {
+export const CallerCard: React.FC<CallerCardProps> = ({ call, voiceprints }) => {
+  const identity = call?.speaker_identity;
+  const profile = call?.caller_profile;
+  const matchedVp = voiceprints.find(
+    (vp) =>
+      vp.customer_id === (identity?.claimed_customer_id || call?.claimed_customer_id) &&
+      vp.status === "ACTIVE"
+  );
+
+  const enrolled = identity ? identity.enrolled : Boolean(matchedVp);
   const similarityDisplay =
-    eidos && eidos.status === "done" && eidos.similarity !== undefined
-      ? formatSimilarity(eidos.similarity)
+    identity && identity.match_confidence !== null && identity.match_confidence !== undefined
+      ? formatSimilarity(identity.match_confidence)
       : copy.states.unavailable;
 
   return (
@@ -29,14 +37,35 @@ export const CallerCard: React.FC<CallerCardProps> = ({ callerMeta, eidos }) => 
         <div className="flex items-center justify-between gap-2">
           <span className="text-[var(--text-muted)]">{copy.callerCard.claimedIdentity}</span>
           <span className="font-semibold text-[var(--text-primary)] text-right truncate">
-            {callerMeta.callerLabel || copy.states.unavailable}
+            {profile?.claimed_name || identity?.claimed_customer_id || call?.claimed_customer_id || copy.states.unavailable}
           </span>
         </div>
 
         <div className="flex items-center justify-between gap-2">
+          <span className="text-[var(--text-muted)]">customer_id</span>
+          <span className="font-mono text-[var(--text-primary)] truncate">
+            {identity?.claimed_customer_id || call?.claimed_customer_id || copy.states.unavailable}
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[var(--text-muted)]">voiceprint_id</span>
+          <span className="font-mono text-[var(--text-primary)] truncate">
+            {matchedVp?.voiceprint_id || "UNENROLLED"}
+          </span>
+        </div>
+
+        {profile?.account_ref_masked && (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[var(--text-muted)]">Account Ref</span>
+            <span className="font-mono text-[var(--text-primary)]">{profile.account_ref_masked}</span>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-2">
           <span className="text-[var(--text-muted)]">{copy.callerCard.enrollmentStatus}</span>
-          <Badge variant={callerMeta.enrolled ? "success" : "warning"} size="sm">
-            {callerMeta.enrolled ? (
+          <Badge variant={enrolled ? "success" : "warning"} size="sm">
+            {enrolled ? (
               <span className="inline-flex items-center gap-1">
                 <ShieldCheck className="w-3.5 h-3.5" />
                 {copy.callerCard.enrolled}

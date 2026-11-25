@@ -4,68 +4,70 @@ import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { ModeBadge } from "../../components/ui/ModeBadge";
 import { copy } from "../../copy";
-import type { DecisionType, LivenessStatus, ModeType } from "../../types";
+import type { CallDecision, ExecutionMode, FusionBand } from "../../types";
 
 export interface DecisionCardProps {
-  decision: DecisionType;
-  mode: ModeType;
-  livenessStatus: LivenessStatus;
-  actionLabel?: string;
+  decision: CallDecision;
+  band: FusionBand;
+  mode: ExecutionMode;
+  recommendedAction: string;
+  livenessOverrideApplied: boolean;
+  voiceCloneOverrideApplied?: boolean;
   onPrimaryAction: () => void;
   className?: string;
 }
 
 export const DecisionCard: React.FC<DecisionCardProps> = ({
   decision,
+  band,
   mode,
-  livenessStatus,
-  actionLabel,
+  recommendedAction,
+  livenessOverrideApplied,
+  voiceCloneOverrideApplied,
   onPrimaryAction,
   className = "",
 }) => {
-  const effectiveDecision: DecisionType = livenessStatus === "failed" ? "END_CALL" : decision;
+  const effective = decision === "INCOMPLETE ANALYSIS" ? "STEP_UP" : decision;
 
   const config = {
-    CONTINUE: {
+    ALLOW: {
       variant: "decision-continue" as const,
       icon: <CheckCircle2 className="w-10 h-10 text-[var(--decision-continue-solid)] shrink-0" />,
-      headline: copy.decisions.continue.headline,
+      headline: "ALLOW",
       headlineColor: "text-[var(--decision-continue-text)]",
-      summary: copy.decisions.continue.summary,
-      notice: copy.decisions.continue.mandatoryNotice,
       buttonVariant: "primary" as const,
-      defaultAction: copy.decisions.continue.actionLabel,
+      ctaLabel: copy.decisions.continue.actionLabel,
+      notice: copy.decisions.continue.mandatoryNotice,
     },
     STEP_UP: {
       variant: "decision-stepup" as const,
       icon: <AlertTriangle className="w-10 h-10 text-[var(--decision-stepup-solid)] shrink-0" />,
-      headline: copy.decisions.stepUp.headline,
+      headline: decision === "INCOMPLETE ANALYSIS" ? "INCOMPLETE ANALYSIS" : "STEP_UP",
       headlineColor: "text-[var(--decision-stepup-text)]",
-      summary: copy.decisions.stepUp.summary,
-      notice: copy.decisions.stepUp.actionOnHold,
       buttonVariant: "secondary" as const,
-      defaultAction: copy.decisions.stepUp.actionLabel,
+      ctaLabel: copy.decisions.stepUp.actionLabel,
+      notice: copy.decisions.stepUp.actionOnHold,
     },
-    END_CALL: {
+    BLOCK: {
       variant: "decision-endcall" as const,
       icon: <XCircle className="w-10 h-10 text-[var(--decision-endcall-solid)] shrink-0" />,
-      headline: copy.decisions.endCall.headline,
+      headline: "BLOCK",
       headlineColor: "text-[var(--decision-endcall-text)]",
-      summary:
-        livenessStatus === "failed"
-          ? copy.liveness.overrideLine
-          : copy.decisions.endCall.summary,
-      notice: copy.decisions.endCall.actionOnHold,
       buttonVariant: "danger" as const,
-      defaultAction: copy.decisions.endCall.actionLabel,
+      ctaLabel: copy.decisions.endCall.actionLabel,
+      notice: livenessOverrideApplied
+        ? copy.liveness.overrideLine
+        : voiceCloneOverrideApplied
+        ? "Aletheia synthetic + Eidos match -> voice-clone override forced BLOCK."
+        : copy.decisions.endCall.actionOnHold,
     },
-  }[effectiveDecision];
+  }[effective];
 
   return (
     <Card variant={config.variant} className={`!p-5 space-y-3 ${className}`}>
-      <div className="flex items-center justify-between border-b border-black/10 pb-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/10 pb-2">
         <span className="caption-text font-medium text-[var(--text-secondary)]">
-          {copy.app.footerPower}
+          {copy.app.footerPower} · Fusion Band: <strong>{band}</strong>
         </span>
         <ModeBadge mode={mode} />
       </div>
@@ -78,7 +80,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({
               {config.headline}
             </h1>
             <p className="text-[16px] font-medium text-[var(--text-primary)] mt-1">
-              {config.summary}
+              {recommendedAction}
             </p>
           </div>
         </div>
@@ -90,7 +92,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({
           icon={<ArrowRight className="w-4 h-4" />}
           className="shrink-0"
         >
-          {actionLabel || config.defaultAction}
+          {config.ctaLabel}
         </Button>
       </div>
 

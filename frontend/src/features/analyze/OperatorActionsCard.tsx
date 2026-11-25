@@ -3,30 +3,22 @@ import { CheckCircle2, ShieldAlert, PauseCircle, UserCheck, PhoneOff } from "luc
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { copy } from "../../copy";
-import type { DecisionType, GuardState } from "../../types";
+import type { CallDecision, GuardState } from "../../types";
 
 export interface OperatorActionsCardProps {
-  decision?: DecisionType;
+  decision?: CallDecision;
   guardState: GuardState;
   disabled: boolean;
-  onAllow: () => void;
-  onRunChallenge: () => void;
-  onPauseBot: () => void;
-  onTransferHuman: () => void;
-  onEndCall: () => void;
+  onAction: (action: string, note: string) => void;
 }
 
 export const OperatorActionsCard: React.FC<OperatorActionsCardProps> = ({
   decision,
   guardState,
   disabled,
-  onAllow,
-  onRunChallenge,
-  onPauseBot,
-  onTransferHuman,
-  onEndCall,
+  onAction,
 }) => {
-  const allowEnabled = !disabled && decision === "CONTINUE";
+  const allowEnabled = !disabled && decision === "ALLOW";
 
   return (
     <Card className="!p-4 space-y-3">
@@ -41,7 +33,7 @@ export const OperatorActionsCard: React.FC<OperatorActionsCardProps> = ({
           size="sm"
           className="w-full justify-start"
           disabled={!allowEnabled}
-          onClick={onAllow}
+          onClick={() => onAction("ALLOW", "Operator allowed verified call")}
           icon={<CheckCircle2 className="w-4 h-4" />}
         >
           {copy.operatorActions.allow}
@@ -52,7 +44,7 @@ export const OperatorActionsCard: React.FC<OperatorActionsCardProps> = ({
           size="sm"
           className="w-full justify-start"
           disabled={disabled}
-          onClick={onRunChallenge}
+          onClick={() => onAction("CHALLENGE", "Operator initiated dynamic liveness challenge")}
           icon={<ShieldAlert className="w-4 h-4" />}
         >
           {copy.operatorActions.runChallenge}
@@ -63,7 +55,7 @@ export const OperatorActionsCard: React.FC<OperatorActionsCardProps> = ({
           size="sm"
           className="w-full justify-start border border-[var(--border)]"
           disabled={disabled}
-          onClick={onPauseBot}
+          onClick={() => onAction("PAUSE_BOT", "Operator paused Bot Guard")}
           icon={<PauseCircle className="w-4 h-4" />}
         >
           {copy.operatorActions.pauseBot}
@@ -74,7 +66,7 @@ export const OperatorActionsCard: React.FC<OperatorActionsCardProps> = ({
           size="sm"
           className="w-full justify-start border border-[var(--border)]"
           disabled={disabled}
-          onClick={onTransferHuman}
+          onClick={() => onAction("TRANSFER_TO_HUMAN", "Operator escalated to human specialist")}
           icon={<UserCheck className="w-4 h-4" />}
         >
           {copy.operatorActions.transferHuman}
@@ -85,7 +77,7 @@ export const OperatorActionsCard: React.FC<OperatorActionsCardProps> = ({
           size="sm"
           className="w-full justify-start"
           disabled={disabled}
-          onClick={onEndCall}
+          onClick={() => onAction("TERMINATE_CALL", "Operator terminated call")}
           icon={<PhoneOff className="w-4 h-4" />}
         >
           {copy.operatorActions.endCall}

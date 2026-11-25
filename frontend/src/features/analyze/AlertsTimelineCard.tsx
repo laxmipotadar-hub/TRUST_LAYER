@@ -2,29 +2,26 @@ import React from "react";
 import { Clock, AlertTriangle, CheckCircle2, Shield, Activity } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { copy } from "../../copy";
-import { formatDate } from "../../lib/format";
-import type { CallEvent } from "../../types";
+import type { EvidenceEvent } from "../../types";
 
 export interface AlertsTimelineCardProps {
-  events: CallEvent[];
+  events: EvidenceEvent[];
 }
 
 export const AlertsTimelineCard: React.FC<AlertsTimelineCardProps> = ({ events }) => {
-  // Display newest first
-  const sorted = [...events].reverse();
+  const ordered = [...events].reverse();
 
-  const iconForType = (type: CallEvent["type"]) => {
-    switch (type) {
-      case "alert":
-        return <AlertTriangle className="w-4 h-4 text-[var(--decision-stepup-solid)] shrink-0 mt-0.5" />;
-      case "guard":
-      case "challenge":
-        return <Shield className="w-4 h-4 text-[var(--brand-steel)] shrink-0 mt-0.5" />;
-      case "action":
-        return <CheckCircle2 className="w-4 h-4 text-[var(--decision-continue-solid)] shrink-0 mt-0.5" />;
-      default:
-        return <Activity className="w-4 h-4 text-[var(--text-muted)] shrink-0 mt-0.5" />;
+  const iconForEvent = (evt: EvidenceEvent) => {
+    if (evt.severity === "CRITICAL") {
+      return <AlertTriangle className="w-4 h-4 text-[var(--decision-endcall-solid)] shrink-0 mt-0.5" />;
     }
+    if (evt.severity === "WARNING") {
+      return <Shield className="w-4 h-4 text-[var(--decision-stepup-solid)] shrink-0 mt-0.5" />;
+    }
+    if (evt.category === "POLICY") {
+      return <CheckCircle2 className="w-4 h-4 text-[var(--decision-continue-solid)] shrink-0 mt-0.5" />;
+    }
+    return <Activity className="w-4 h-4 text-[var(--brand-steel)] shrink-0 mt-0.5" />;
   };
 
   return (
@@ -34,19 +31,22 @@ export const AlertsTimelineCard: React.FC<AlertsTimelineCardProps> = ({ events }
         <h3 className="card-title">{copy.alertsTimeline.title}</h3>
       </div>
 
-      {sorted.length === 0 ? (
+      {ordered.length === 0 ? (
         <p className="caption-text">{copy.alertsTimeline.empty}</p>
       ) : (
         <ul className="space-y-2.5 list-none m-0 p-0">
-          {sorted.map((evt) => (
+          {ordered.map((evt) => (
             <li
               key={evt.id}
               className="flex items-start gap-2.5 text-[14px] border-b border-[var(--border)] pb-2 last:border-b-0 last:pb-0"
             >
-              {iconForType(evt.type)}
+              {iconForEvent(evt)}
               <div className="min-w-0 flex-1">
-                <p className="text-[var(--text-primary)] leading-snug">{evt.message}</p>
-                <span className="caption-text font-mono block mt-0.5">{formatDate(evt.ts)}</span>
+                <p className="font-semibold text-[var(--text-primary)] leading-snug">{evt.title}</p>
+                <p className="text-[var(--text-secondary)] leading-snug">{evt.description}</p>
+                <span className="caption-text font-mono block mt-0.5">
+                  t={evt.timestamp_sec.toFixed(1)}s · {evt.provenance}
+                </span>
               </div>
             </li>
           ))}

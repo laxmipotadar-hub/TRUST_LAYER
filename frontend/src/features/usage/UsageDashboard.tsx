@@ -1,43 +1,46 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Shield, Sparkles, Database, CheckCircle2, Copy, Check, RefreshCw } from "lucide-react";
+import { Shield, Database, CheckCircle2, Copy, Check, Download, Flame, RefreshCw } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
-import { ModeBadge } from "../../components/ui/ModeBadge";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { ErrorState } from "../../components/ui/ErrorState";
-import { Tooltip } from "../../components/ui/Tooltip";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { copy } from "../../copy";
 import { aegisApi } from "../../lib/api";
 import { formatDate } from "../../lib/format";
-import type { ApiError, UsageResponse } from "../../types";
+import { useAnalysis } from "../../context/AnalysisContext";
+import type { ApiError, UsageSummaryResponse } from "../../types";
 
 export const UsageDashboard: React.FC = () => {
-  const [usage, setUsage] = useState<UsageResponse | null>(null);
+  const { executionMode } = useAnalysis();
+  const [usage, setUsage] = useState<UsageSummaryResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [isRerunning, setIsRerunning] = useState(false);
-  const [highlightId, setHighlightId] = useState<string | null>(null);
 
   const loadUsage = useCallback(async () => {
     try {
       setIsLoading(true);
       setErrorMsg(null);
-      const data = await aegisApi.getUsage();
+      const data = await aegisApi.getUsage(true);
       setUsage(data);
     } catch (err) {
       const apiErr = err as ApiError;
       setErrorMsg(apiErr?.message || copy.states.errorTitle);
-      setUsage(null);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadUsage();
-  }, [loadUsage]);
+    void loadUsage();
+    if (executionMode !== "LIVE") return;
+    const timer = window.setInterval(() => {
+      void aegisApi.getUsage(false).then(setUsage).catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [loadUsage, executionMode]);
 
   const handleCopyOpId = (opId: string) => {
     navigator.clipboard?.writeText(opId);
@@ -45,197 +48,143 @@ export const UsageDashboard: React.FC = () => {
     setTimeout(() => setCopiedId(null), 1500);
   };
 
-  const handleRerunSameClip = async () => {
-    setIsRerunning(true);
-    try {
-      // Run S1; if first time in session, run a second time so cache hit triggers
-      const first = await aegisApi.analyzeCall({ scenario_id: "S1" });
-      if (first.mode !== "CACHED") {
-        await aegisApi.analyzeCall({ scenario_id: "S1" });
-      }
-      const updated = await aegisApi.getUsage();
-      setUsage(updated);
-      if (updated.operations.length > 0) {
-        setHighlightId(updated.operations[0].id);
-      }
-    } catch {
-      // Handled gracefully
-    } finally {
-      setIsRerunning(false);
-    }
-  };
-
   const creditBalanceDisplay =
-    errorMsg || usage?.credit_balance === null || usage?.credit_balance === undefined
-      ? copy.states.unavailable
-      : usage.credit_balance.toLocaleString();
-
-  const providerCallsCount = usage
-    ? usage.aletheia_calls + usage.eidos_calls
-    : copy.states.unavailable;
+    usage?.credit_balance !== null && usage?.credit_balance !== undefined
+      ? usage.credit_balance.toLocaleString()
+      : copy.states.unavailable;
 
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-[14px] text-[var(--text-secondary)]">
+          Live backend operations ledger ({executionMode === "LIVE" ? "auto-refreshing every 5s in LIVE mode" : "snapshot"}).
+        </p>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={() => void loadUsage()} icon={<RefreshCw className="w-4 h-4" />}>
+            Refresh
+          </Button>
+          <a
+            href={aegisApi.getUsageCsvUrl()}
+            download="aegis_operations_ledger.csv"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--brand-navy)] text-white text-[14px] font-semibold"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export CSV</span>
+          </a>
+        </div>
+      </div>
+
       {errorMsg && <ErrorState message={errorMsg} onRetry={loadUsage} />}
 
-      {/* Four Tiles */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="space-y-1.5">
           <div className="flex items-center justify-between">
             <span className="caption-text font-medium">{copy.usage.creditBalance}</span>
             <Database className="w-5 h-5 text-[var(--brand-navy)]" />
           </div>
-          {isLoading ? (
-            <Skeleton className="h-8 w-24" />
-          ) : (
-            <p className="text-[28px] font-extrabold text-[var(--text-primary)]">
-              {creditBalanceDisplay}
-            </p>
+          {isLoading ? <Skeleton className="h-8 w-24" /> : (
+            <p className="text-[28px] font-extrabold text-[var(--text-primary)]">{creditBalanceDisplay}</p>
           )}
-          <p className="caption-text">{copy.usage.reportedByDetectifAI}</p>
+          <p className="caption-text">{usage?.credit_balance_error || copy.usage.reportedByDetectifAI}</p>
         </Card>
 
         <Card className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="caption-text font-medium">{copy.usage.providerCalls}</span>
+            <span className="caption-text font-medium">FRESH / Provider Calls</span>
             <Shield className="w-5 h-5 text-[var(--brand-steel)]" />
           </div>
-          {isLoading ? (
-            <Skeleton className="h-8 w-20" />
-          ) : (
+          {isLoading ? <Skeleton className="h-8 w-20" /> : (
             <p className="text-[28px] font-extrabold text-[var(--text-primary)]">
-              {providerCallsCount}
+              {usage?.fresh_calls ?? 0} fresh
             </p>
           )}
-          <p className="caption-text">Aletheia + Eidos</p>
+          <p className="caption-text">
+            Aletheia {usage?.aletheia_calls ?? 0} · Eidos {usage?.eidos_calls ?? 0} · Gemini {usage?.gemini_calls ?? 0}
+          </p>
         </Card>
 
         <Card className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="caption-text font-medium">{copy.usage.cacheHits}</span>
-            <CheckCircle2 className="w-5 h-5 text-[var(--brand-steel)]" />
+            <span className="caption-text font-medium">Credit Burn Rate</span>
+            <Flame className="w-5 h-5 text-[var(--decision-stepup-solid)]" />
           </div>
-          {isLoading ? (
-            <Skeleton className="h-8 w-16" />
-          ) : (
+          {isLoading ? <Skeleton className="h-8 w-20" /> : (
             <p className="text-[28px] font-extrabold text-[var(--text-primary)]">
-              {usage ? usage.cache_hits : copy.states.unavailable}
+              {(usage?.burn_rate_per_call ?? 0).toFixed(1)}
             </p>
           )}
-          <p className="caption-text">Idempotent repeats</p>
+          <p className="caption-text">credits / call ({usage?.total_credits_used ?? 0} total used)</p>
         </Card>
 
-        <Card className="space-y-1.5 bg-[var(--decision-continue-tint)] border-[var(--decision-continue-border)]">
+        <Card className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="caption-text font-medium text-[var(--decision-continue-text)]">
-              {copy.usage.creditsSaved}
-            </span>
-            <Sparkles className="w-5 h-5 text-[var(--decision-continue-solid)]" />
+            <span className="caption-text font-medium">Cache Hits & Credits Saved</span>
+            <CheckCircle2 className="w-5 h-5 text-[var(--decision-continue-solid)]" />
           </div>
-          {isLoading ? (
-            <Skeleton className="h-8 w-24" />
-          ) : (
-            <p className="text-[28px] font-extrabold text-[var(--decision-continue-solid)]">
-              {usage ? `+${usage.total_credits_saved}` : copy.states.unavailable}
+          {isLoading ? <Skeleton className="h-8 w-20" /> : (
+            <p className="text-[28px] font-extrabold text-[var(--decision-continue-text)]">
+              {usage?.total_credits_saved ?? 0}
             </p>
           )}
-          <p className="caption-text text-[var(--decision-continue-text)]">
-            {copy.usage.calculatedLocally}
-          </p>
+          <p className="caption-text">{usage?.cache_hits ?? 0} cache hits recorded</p>
         </Card>
       </div>
 
-      {/* Ledger Table + Re-run same clip button */}
-      <Card className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <h3 className="section-title">{copy.usage.operationsLogTitle}</h3>
-            <Tooltip content={copy.tooltips.idempotency} />
+      {!isLoading && (!usage || usage.operations.length === 0) ? (
+        <EmptyState
+          title="No ledger operations yet"
+          description="Analyze a call in LIVE, CACHED, or DEMO mode to inspect operation IDs, credit costs, and latencies."
+        />
+      ) : (
+        <Card className="!p-0 overflow-hidden">
+          <div className="p-4 border-b border-[var(--border)] flex items-center justify-between">
+            <h3 className="card-title">{copy.usage.operationsLogTitle}</h3>
+            <span className="caption-text font-mono">{usage?.operations.length || 0} rows</span>
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            loading={isRerunning}
-            onClick={handleRerunSameClip}
-            icon={<RefreshCw className="w-4 h-4" />}
-          >
-            {copy.usage.rerunSameClip}
-          </Button>
-        </div>
-
-        {isLoading ? (
-          <div className="space-y-2">
-            {[1, 2, 3].map((i) => (
-              <Skeleton key={i} className="h-10 w-full" />
-            ))}
-          </div>
-        ) : !usage?.operations || usage.operations.length === 0 ? (
-          <p className="text-[14px] text-[var(--text-secondary)]">{copy.usage.noOperations}</p>
-        ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-[14px]">
               <thead className="bg-[var(--fill-subtle)] text-[var(--text-secondary)] border-b border-[var(--border)]">
                 <tr>
-                  <th className="py-2.5 px-3 font-semibold">{copy.usage.colCall}</th>
-                  <th className="py-2.5 px-3 font-semibold">{copy.usage.colModel}</th>
-                  <th className="py-2.5 px-3 font-semibold">{copy.usage.colTime}</th>
-                  <th className="py-2.5 px-3 font-semibold">{copy.usage.colMode}</th>
-                  <th className="py-2.5 px-3 font-semibold">{copy.usage.colOperationId}</th>
-                  <th className="py-2.5 px-3 font-semibold">{copy.usage.colCredits}</th>
-                  <th className="py-2.5 px-3 font-semibold">{copy.usage.colCacheStatus}</th>
+                  <th className="py-3 px-4 font-semibold">operation_id</th>
+                  <th className="py-3 px-4 font-semibold">Service / Endpoint</th>
+                  <th className="py-3 px-4 font-semibold">Mode</th>
+                  <th className="py-3 px-4 font-semibold">Latency</th>
+                  <th className="py-3 px-4 font-semibold">Credits</th>
+                  <th className="py-3 px-4 font-semibold">Timestamp</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[var(--border)] text-[var(--text-primary)]">
-                {usage.operations.map((op) => {
-                  const isHighlighted = highlightId === op.id && op.mode === "CACHED";
-                  return (
-                    <tr
-                      key={op.id}
-                      className={
-                        isHighlighted
-                          ? "bg-[var(--decision-continue-tint)] font-medium transition-colors"
-                          : "hover:bg-[var(--fill-subtle)]"
-                      }
-                    >
-                      <td className="py-2.5 px-3 font-mono">{op.call_id || copy.states.unavailable}</td>
-                      <td className="py-2.5 px-3 font-semibold capitalize">{op.service}</td>
-                      <td className="py-2.5 px-3 font-mono">{formatDate(op.timestamp)}</td>
-                      <td className="py-2.5 px-3">
-                        <ModeBadge mode={op.mode} />
-                      </td>
-                      <td className="py-2.5 px-3 font-mono">
-                        <span className="inline-flex items-center gap-1.5">
-                          <span>{op.id}</span>
-                          <button
-                            type="button"
-                            aria-label="Copy operation ID"
-                            onClick={() => handleCopyOpId(op.id)}
-                            className="p-1 rounded hover:bg-[var(--border)] cursor-pointer text-[var(--text-muted)]"
-                          >
-                            {copiedId === op.id ? (
-                              <Check className="w-3.5 h-3.5 text-[var(--decision-continue-solid)]" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 font-mono font-bold">{op.cost_credits}</td>
-                      <td className="py-2.5 px-3">
-                        <Badge variant={op.mode === "CACHED" || op.cached ? "info" : "neutral"} size="sm">
-                          {op.mode === "CACHED" || op.cached
-                            ? copy.usage.cacheHitLabel
-                            : copy.usage.cacheMissLabel}
-                        </Badge>
-                      </td>
-                    </tr>
-                  );
-                })}
+              <tbody className="divide-y divide-[var(--border)]">
+                {(usage?.operations || []).map((op) => (
+                  <tr key={`${op.operation_id}-${op.timestamp}`} className="hover:bg-[var(--fill-subtle)]">
+                    <td className="py-2.5 px-4 font-mono">
+                      <button
+                        type="button"
+                        onClick={() => handleCopyOpId(op.operation_id)}
+                        className="inline-flex items-center gap-1.5 hover:text-[var(--brand-steel)] cursor-pointer"
+                      >
+                        <span>{op.operation_id}</span>
+                        {copiedId === op.operation_id ? <Check className="w-3.5 h-3.5 text-[var(--decision-continue-solid)]" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </td>
+                    <td className="py-2.5 px-4">
+                      <span className="font-semibold uppercase">{op.service}</span>{" "}
+                      <span className="font-mono text-[var(--text-muted)]">{op.endpoint}</span>
+                    </td>
+                    <td className="py-2.5 px-4">
+                      <Badge variant={op.mode === "FRESH" ? "info" : op.mode === "CACHED" ? "success" : "neutral"} size="sm">
+                        {op.mode}
+                      </Badge>
+                    </td>
+                    <td className="py-2.5 px-4 font-mono">{op.latency_ms.toFixed(0)} ms</td>
+                    <td className="py-2.5 px-4 font-mono font-bold">{op.cost_credits}</td>
+                    <td className="py-2.5 px-4">{formatDate(op.timestamp)}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        )}
-      </Card>
+        </Card>
+      )}
     </div>
   );
 };

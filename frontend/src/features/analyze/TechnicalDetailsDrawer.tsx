@@ -3,35 +3,30 @@ import { Copy, Check, Terminal, Shield, Hash } from "lucide-react";
 import { Drawer } from "../../components/ui/Drawer";
 import { Button } from "../../components/ui/Button";
 import { ModeBadge } from "../../components/ui/ModeBadge";
-import { Tooltip } from "../../components/ui/Tooltip";
 import { copy } from "../../copy";
-import type { AnalyzeResponse } from "../../types";
+import type { CallSession } from "../../types";
 
 export interface TechnicalDetailsDrawerProps {
   isOpen: boolean;
   onClose: () => void;
-  analysis: AnalyzeResponse | null;
+  call: CallSession | null;
   rawUnexpectedPayload?: unknown;
 }
 
 export const TechnicalDetailsDrawer: React.FC<TechnicalDetailsDrawerProps> = ({
   isOpen,
   onClose,
-  analysis,
+  call,
   rawUnexpectedPayload,
 }) => {
   const [copied, setCopied] = useState(false);
 
-  if (!analysis && rawUnexpectedPayload === undefined) return null;
+  if (!call && rawUnexpectedPayload === undefined) return null;
 
-  const jsonContent = JSON.stringify(
-    analysis ?? rawUnexpectedPayload,
-    null,
-    2
-  );
+  const jsonContent = JSON.stringify(call ?? rawUnexpectedPayload, null, 2);
 
   const handleCopyJson = () => {
-    navigator.clipboard.writeText(jsonContent);
+    navigator.clipboard?.writeText(jsonContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -43,13 +38,13 @@ export const TechnicalDetailsDrawer: React.FC<TechnicalDetailsDrawerProps> = ({
       title={copy.technicalDetails.drawerTitle}
       subtitle={copy.technicalDetails.drawerSubtitle}
     >
-      {analysis && (
-        <>
+      {call && (
+        <div className="space-y-4">
           <div className="flex items-center justify-between p-3 bg-[var(--fill-subtle)] border border-[var(--border)] rounded-lg">
             <span className="text-[14px] font-medium text-[var(--text-secondary)]">
               {copy.technicalDetails.mode}
             </span>
-            <ModeBadge mode={analysis.mode} />
+            <ModeBadge mode={call.execution_mode} />
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -59,7 +54,7 @@ export const TechnicalDetailsDrawer: React.FC<TechnicalDetailsDrawerProps> = ({
                 <Hash className="w-4 h-4 text-[var(--brand-steel)]" />
               </div>
               <p className="text-[15px] font-semibold text-[var(--text-primary)] mt-1 font-mono">
-                {analysis.call_id}
+                {call.call_id}
               </p>
             </div>
 
@@ -69,61 +64,39 @@ export const TechnicalDetailsDrawer: React.FC<TechnicalDetailsDrawerProps> = ({
                 <Shield className="w-4 h-4 text-[var(--decision-continue-solid)]" />
               </div>
               <p className="text-[15px] font-semibold text-[var(--decision-continue-solid)] mt-1">
-                +{analysis.credits_saved} credits
+                +{call.credits_saved} credits
               </p>
             </div>
           </div>
 
-          <div className="p-4 border border-[var(--border)] rounded-lg space-y-2 bg-[var(--surface)]">
-            <div className="flex items-center justify-between">
-              <h4 className="font-semibold text-[15px] text-[var(--text-primary)]">
-                Aletheia Operation Telemetry
-              </h4>
-              <Tooltip content={copy.tooltips.operationId} />
-            </div>
-            <p className="text-[14px] text-[var(--text-secondary)]">
-              {copy.technicalDetails.operationId}:{" "}
-              <span className="font-mono">{analysis.aletheia.operation_id}</span>
+          <div className="p-4 border border-[var(--border)] rounded-lg space-y-2 bg-[var(--surface)] text-[14px]">
+            <h4 className="font-semibold text-[15px] text-[var(--text-primary)]">
+              Layer Operation & Latency Telemetry
+            </h4>
+            <p className="text-[var(--text-secondary)] font-mono">
+              Aletheia op={call.voice_authenticity.operation_id || "none"} · {call.voice_authenticity.latency_ms ?? "—"} ms · {call.voice_authenticity.cost_credits ?? 0} cr
             </p>
-            <p className="text-[14px] text-[var(--text-secondary)]">
-              Cost: {analysis.aletheia.cost_credits} credits • Status: {analysis.aletheia.status}
+            <p className="text-[var(--text-secondary)] font-mono">
+              Eidos op={call.speaker_identity.operation_id || "none"} · {call.speaker_identity.latency_ms ?? "—"} ms · {call.speaker_identity.cost_credits ?? 0} cr
+            </p>
+            <p className="text-[var(--text-secondary)] font-mono">
+              Script ({call.scam_analysis.engine_used}) · {call.scam_analysis.latency_ms ?? "—"} ms
+            </p>
+            <p className="text-[var(--text-secondary)] font-mono">
+              Manipulation ({call.manipulation_analysis.model_version}) · {call.manipulation_analysis.latency_ms ?? "—"} ms
             </p>
           </div>
-
-          <div className="p-4 border border-[var(--border)] rounded-lg space-y-2 bg-[var(--surface)]">
-            <div className="flex items-center justify-between">
-              <h4 className="font-semibold text-[15px] text-[var(--text-primary)]">
-                Eidos Biometric Telemetry
-              </h4>
-              <Tooltip content={copy.tooltips.similarity} />
-            </div>
-            <p className="text-[14px] text-[var(--text-secondary)]">
-              {copy.technicalDetails.operationId}:{" "}
-              <span className="font-mono">
-                {analysis.eidos.operation_id || copy.states.unavailable}
-              </span>
-            </p>
-            <p className="text-[14px] text-[var(--text-secondary)]">
-              Cost: {analysis.eidos.cost_credits ?? 0} credits • Status: {analysis.eidos.status}
-            </p>
-            {analysis.eidos.skip_reason && (
-              <p className="text-[14px] text-[var(--decision-stepup-text)]">
-                {copy.technicalDetails.skipReason}: {analysis.eidos.skip_reason}
-              </p>
-            )}
-          </div>
-        </>
+        </div>
       )}
 
-      {/* Raw JSON View */}
-      <div className="space-y-2">
+      <div className="space-y-2 mt-4">
         <div className="flex items-center justify-between">
-          <span className="card-title flex items-center gap-2">
+          <div className="flex items-center gap-2 text-[14px] font-semibold text-[var(--text-primary)]">
             <Terminal className="w-4 h-4 text-[var(--brand-steel)]" />
-            {copy.technicalDetails.rawPayload}
-          </span>
+            <span>{copy.technicalDetails.rawPayload}</span>
+          </div>
           <Button
-            variant="secondary"
+            variant="ghost"
             size="sm"
             onClick={handleCopyJson}
             icon={copied ? <Check className="w-4 h-4 text-[var(--decision-continue-solid)]" /> : <Copy className="w-4 h-4" />}
@@ -132,7 +105,7 @@ export const TechnicalDetailsDrawer: React.FC<TechnicalDetailsDrawerProps> = ({
           </Button>
         </div>
 
-        <pre className="p-4 bg-[var(--fill-subtle)] border border-[var(--border)] rounded-lg text-[14px] font-mono text-[var(--text-primary)] overflow-x-auto max-h-72">
+        <pre className="p-4 rounded-lg bg-[var(--fill-subtle)] border border-[var(--border)] text-[14px] font-mono text-[var(--text-primary)] overflow-x-auto max-h-96">
           {jsonContent}
         </pre>
       </div>

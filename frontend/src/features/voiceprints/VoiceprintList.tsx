@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { UserCheck, Trash2, Search, Plus, Loader2 } from "lucide-react";
+import { UserCheck, Trash2, Search, Plus, Loader2, ShieldOff } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
@@ -10,7 +10,7 @@ import { Modal } from "../../components/ui/Modal";
 import { copy } from "../../copy";
 import { aegisApi } from "../../lib/api";
 import { formatDate } from "../../lib/format";
-import type { ApiError, Voiceprint } from "../../types";
+import type { ApiError, VoiceprintRecord } from "../../types";
 
 export interface VoiceprintListProps {
   onNavigateEnroll: () => void;
@@ -21,12 +21,13 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
   onNavigateEnroll,
   onVoiceprintRevoked,
 }) => {
-  const [voiceprints, setVoiceprints] = useState<Voiceprint[]>([]);
+  const [voiceprints, setVoiceprints] = useState<VoiceprintRecord[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Voiceprint | null>(null);
-  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<VoiceprintRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<VoiceprintRecord | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const loadVoiceprints = async () => {
     try {
@@ -43,35 +44,48 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
   };
 
   useEffect(() => {
-    loadVoiceprints();
+    void loadVoiceprints();
   }, []);
 
   const handleConfirmRevoke = async () => {
-    if (!deleteTarget) return;
-    const targetId = deleteTarget.id;
-    setDeleteTarget(null);
-    setRevokingId(targetId);
-
+    if (!revokeTarget) return;
+    const targetId = revokeTarget.voiceprint_id;
+    setRevokeTarget(null);
+    setBusyId(targetId);
     try {
-      await aegisApi.deleteVoiceprint(targetId);
-      // Mark "Revoked" ONLY after backend success
+      const updated = await aegisApi.revokeVoiceprint(targetId);
       setVoiceprints((prev) =>
-        prev.map((vp) => (vp.id === targetId ? { ...vp, status: "revoked" } : vp))
+        prev.map((vp) => (vp.voiceprint_id === targetId ? updated : vp))
       );
       onVoiceprintRevoked();
     } catch (err) {
-      const apiErr = err as ApiError;
-      setErrorMsg(apiErr?.message || copy.states.errorTitle);
+      setErrorMsg((err as ApiError)?.message || copy.states.errorTitle);
     } finally {
-      setRevokingId(null);
+      setBusyId(null);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    const targetId = deleteTarget.voiceprint_id;
+    setDeleteTarget(null);
+    setBusyId(targetId);
+    try {
+      await aegisApi.deleteVoiceprint(targetId);
+      setVoiceprints((prev) => prev.filter((vp) => vp.voiceprint_id !== targetId));
+      onVoiceprintRevoked();
+    } catch (err) {
+      setErrorMsg((err as ApiError)?.message || copy.states.errorTitle);
+    } finally {
+      setBusyId(null);
     }
   };
 
   const filtered = voiceprints.filter(
     (vp) =>
-      vp.claimed_user_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      vp.user_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      vp.id.toLowerCase().includes(searchTerm.toLowerCase())
+      vp.customer_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      vp.customer_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      vp.voiceprint_id.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   return (
@@ -84,7 +98,7 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
             placeholder={copy.voiceprints.searchPlaceholder}
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 border border-[var(--border)] rounded-lg text-[14px] bg-[var(--surface)] focus-visible:ring-2 focus-visible:ring-[var(--brand-steel)]"
+            className="w-full pl-9 pr-4 py-2 border border-[var(--border)] rounded-lg text-[14px] bg-[var(--surface)]"
           />
         </div>
         <Button variant="primary" onClick={onNavigateEnroll} icon={<Plus className="w-4 h-4" />}>
@@ -114,55 +128,67 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
             <table className="w-full text-left text-[14px]">
               <thead className="bg-[var(--fill-subtle)] text-[var(--text-secondary)] border-b border-[var(--border)]">
                 <tr>
-                  <th className="py-3 px-4 font-semibold">{copy.voiceprints.colUser}</th>
-                  <th className="py-3 px-4 font-semibold">{copy.voiceprints.colVoiceId}</th>
-                  <th className="py-3 px-4 font-semibold">{copy.voiceprints.colEnrolled}</th>
-                  <th className="py-3 px-4 font-semibold">{copy.voiceprints.colLastVerification}</th>
-                  <th className="py-3 px-4 font-semibold">{copy.voiceprints.colStatus}</th>
-                  <th className="py-3 px-4 font-semibold text-right">{copy.voiceprints.colAction}</th>
+                  <th className="py-3 px-4 font-semibold">customer_name / customer_id</th>
+                  <th className="py-3 px-4 font-semibold">voiceprint_id / provider_speaker_ref</th>
+                  <th className="py-3 px-4 font-semibold">Enrolled</th>
+                  <th className="py-3 px-4 font-semibold">Verifications</th>
+                  <th className="py-3 px-4 font-semibold">Status</th>
+                  <th className="py-3 px-4 font-semibold text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border)] text-[var(--text-primary)]">
-                {filtered.map((vp) => {
-                  const isRevoked = vp.status === "revoked";
-                  const isRowRevoking = revokingId === vp.id;
-                  return (
-                    <tr key={vp.id} className="hover:bg-[var(--fill-subtle)]">
-                      <td className="py-3 px-4">
-                        <div className="font-semibold">{vp.user_name}</div>
-                        <div className="caption-text font-mono">{vp.claimed_user_id}</div>
-                      </td>
-                      <td className="py-3 px-4 font-mono">{vp.id}</td>
-                      <td className="py-3 px-4">{formatDate(vp.enrolled_at)}</td>
-                      <td className="py-3 px-4">
-                        {vp.last_verified_at ? formatDate(vp.last_verified_at) : copy.states.unavailable}
-                      </td>
-                      <td className="py-3 px-4">
-                        <Badge variant={isRevoked ? "danger" : "success"} size="sm">
-                          {isRevoked ? copy.voiceprints.statusRevoked : copy.voiceprints.statusActive}
-                        </Badge>
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        {isRowRevoking ? (
-                          <span className="inline-flex items-center gap-1.5 text-[14px] text-[var(--text-muted)]">
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            <span>Revoking...</span>
-                          </span>
-                        ) : (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            disabled={isRevoked || revokingId !== null}
-                            onClick={() => setDeleteTarget(vp)}
-                            icon={<Trash2 className="w-4 h-4 text-[var(--decision-endcall-solid)]" />}
-                          >
-                            {copy.voiceprints.deleteButton}
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {filtered.map((vp) => (
+                  <tr key={vp.voiceprint_id} className="hover:bg-[var(--fill-subtle)]">
+                    <td className="py-3 px-4">
+                      <p className="font-semibold">{vp.customer_name}</p>
+                      <p className="font-mono text-[var(--text-muted)]">{vp.customer_id}</p>
+                    </td>
+                    <td className="py-3 px-4 font-mono">
+                      <p>{vp.voiceprint_id}</p>
+                      <p className="text-[var(--text-muted)]">{vp.provider_speaker_ref || "—"}</p>
+                    </td>
+                    <td className="py-3 px-4">{formatDate(vp.enrolled_at)}</td>
+                    <td className="py-3 px-4">
+                      <p>{vp.last_verification_status} ({vp.verification_count} checks)</p>
+                      {vp.last_verified_at && (
+                        <p className="text-[var(--text-muted)]">{formatDate(vp.last_verified_at)}</p>
+                      )}
+                    </td>
+                    <td className="py-3 px-4">
+                      <Badge variant={vp.status === "ACTIVE" ? "success" : "danger"} size="sm">
+                        {vp.status}
+                      </Badge>
+                    </td>
+                    <td className="py-3 px-4 text-right space-x-2">
+                      {vp.status === "ACTIVE" && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busyId === vp.voiceprint_id}
+                          onClick={() => setRevokeTarget(vp)}
+                          icon={
+                            busyId === vp.voiceprint_id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <ShieldOff className="w-4 h-4" />
+                            )
+                          }
+                        >
+                          Revoke
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={busyId === vp.voiceprint_id}
+                        onClick={() => setDeleteTarget(vp)}
+                        icon={<Trash2 className="w-4 h-4 text-[var(--decision-endcall-solid)]" />}
+                      >
+                        Delete
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -170,26 +196,37 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
       )}
 
       <Modal
-        isOpen={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        title={copy.voiceprints.deleteConfirmTitle}
-        footer={
-          <>
-            <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(null)}>
-              {copy.voiceprints.cancel}
-            </Button>
-            <Button variant="danger" size="sm" onClick={handleConfirmRevoke}>
-              {copy.voiceprints.confirmDelete}
-            </Button>
-          </>
-        }
+        isOpen={Boolean(revokeTarget)}
+        onClose={() => setRevokeTarget(null)}
+        title="Revoke Voiceprint?"
+        subtitle={`Calls DetectifAI Eidos delete-speaker for ${revokeTarget?.customer_name || ""}`}
       >
-        <p className="text-[16px] text-[var(--text-primary)]">{copy.voiceprints.deleteConfirmDesc}</p>
-        {deleteTarget && (
-          <p className="text-[14px] font-mono text-[var(--text-secondary)] mt-2">
-            {deleteTarget.user_name} — {deleteTarget.id}
+        <div className="space-y-4">
+          <p className="text-[14px] text-[var(--text-secondary)]">
+            Revoking marks <span className="font-mono font-semibold">{revokeTarget?.voiceprint_id}</span> as REVOKED and deletes the speaker reference from DetectifAI Eidos.
           </p>
-        )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setRevokeTarget(null)}>Cancel</Button>
+            <Button variant="danger" size="sm" onClick={() => void handleConfirmRevoke()}>Confirm Revoke</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        title="Delete Voiceprint Record?"
+        subtitle={deleteTarget?.voiceprint_id}
+      >
+        <div className="space-y-4">
+          <p className="text-[14px] text-[var(--text-secondary)]">
+            Permanently deletes this local voiceprint record and removes the provider speaker if active.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setDeleteTarget(null)}>Cancel</Button>
+            <Button variant="danger" size="sm" onClick={() => void handleConfirmDelete()}>Delete</Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
