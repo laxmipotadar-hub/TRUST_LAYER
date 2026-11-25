@@ -1,22 +1,42 @@
-import type { ReactNode } from 'react';
-import { Shield } from 'lucide-react';
+import React from "react";
+import { FolderOpen } from "lucide-react";
+import { Button } from "./Button";
 
-interface EmptyStateProps {
+export interface EmptyStateProps {
+  icon?: React.ReactNode;
   title: string;
   description: string;
-  icon?: ReactNode;
-  action?: ReactNode;
+  actionLabel?: string;
+  onAction?: () => void;
+  className?: string;
 }
 
-export function EmptyState({ title, description, icon, action }: EmptyStateProps) {
+export const EmptyState: React.FC<EmptyStateProps> = ({
+  icon,
+  title,
+  description,
+  actionLabel,
+  onAction,
+  className = "",
+}) => {
   return (
-    <div className="flex flex-col items-center justify-center rounded-xl border border-slate-800/90 bg-[#111827] px-6 py-14 text-center">
-      <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-slate-700 bg-[#151e30] text-sky-400">
-        {icon ?? <Shield className="h-5 w-5" />}
+    <div
+      className={`flex flex-col items-center justify-center p-8 text-center bg-[var(--surface)] border border-[var(--border)] rounded-[12px] shadow-xs ${className}`}
+    >
+      <div className="p-3 bg-[var(--fill-subtle)] text-[var(--brand-steel)] rounded-full mb-4">
+        {icon || <FolderOpen className="w-8 h-8" />}
       </div>
-      <h3 className="mt-3 text-sm font-semibold text-[#f8fafc]">{title}</h3>
-      <p className="mt-1 max-w-md text-xs leading-relaxed text-[#94a3b8]">{description}</p>
-      {action && <div className="mt-4">{action}</div>}
+      <h3 className="text-[18px] font-semibold text-[var(--text-primary)] mb-1">
+        {title}
+      </h3>
+      <p className="text-[14px] text-[var(--text-secondary)] max-w-md mb-6 leading-relaxed">
+        {description}
+      </p>
+      {actionLabel && onAction && (
+        <Button variant="primary" onClick={onAction}>
+          {actionLabel}
+        </Button>
+      )}
     </div>
   );
-}
+};

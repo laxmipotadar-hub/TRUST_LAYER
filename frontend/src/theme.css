@@ -1,0 +1,161 @@
+/* AEGIS Design Tokens & Theme (Light Theme) */
+:root {
+  --surface: #FFFFFF;
+  --border: #E2E8F0;
+  --fill-subtle: #F1F5F9;
+  --bg-page: #F8FAFC;
+
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-muted: #64748B;
+
+  --brand-navy: #12263F;
+  --brand-steel: #2F6DA3;
+
+  /* Decision: CONTINUE */
+  --decision-continue-text: #166534;
+  --decision-continue-tint: #DCFCE7;
+  --decision-continue-border: #86EFAC;
+  --decision-continue-solid: #15803D;
+
+  /* Decision: STEP_UP */
+  --decision-stepup-text: #92400E;
+  --decision-stepup-tint: #FEF3C7;
+  --decision-stepup-border: #FCD34D;
+  --decision-stepup-solid: #B45309;
+
+  /* Decision: END_CALL */
+  --decision-endcall-text: #991B1B;
+  --decision-endcall-tint: #FEE2E2;
+  --decision-endcall-border: #FCA5A5;
+  --decision-endcall-solid: #B91C1C;
+
+  /* Mode badges */
+  --mode-real-bg: #12263F;
+  --mode-real-text: #FFFFFF;
+  --mode-cached-border: #2F6DA3;
+  --mode-cached-text: #2F6DA3;
+  --mode-demo-text: #6D28D9;
+  --mode-demo-bg: #EDE9FE;
+
+  /* Shadows & Radius */
+  --radius-card: 12px;
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+@theme {
+  --color-surface: var(--surface);
+  --color-page: var(--bg-page);
+  --color-border: var(--border);
+  --color-subtle: var(--fill-subtle);
+
+  --color-primary: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-muted: var(--text-muted);
+
+  --color-brand-navy: var(--brand-navy);
+  --color-brand-steel: var(--brand-steel);
+
+  --color-decision-continue: var(--decision-continue-solid);
+  --color-decision-continue-text: var(--decision-continue-text);
+  --color-decision-continue-tint: var(--decision-continue-tint);
+  --color-decision-continue-border: var(--decision-continue-border);
+  --color-decision-continue-solid: var(--decision-continue-solid);
+
+  --color-decision-stepup: var(--decision-stepup-solid);
+  --color-decision-stepup-text: var(--decision-stepup-text);
+  --color-decision-stepup-tint: var(--decision-stepup-tint);
+  --color-decision-stepup-border: var(--decision-stepup-border);
+  --color-decision-stepup-solid: var(--decision-stepup-solid);
+
+  --color-decision-endcall: var(--decision-endcall-solid);
+  --color-decision-endcall-text: var(--decision-endcall-text);
+  --color-decision-endcall-tint: var(--decision-endcall-tint);
+  --color-decision-endcall-border: var(--decision-endcall-border);
+  --color-decision-endcall-solid: var(--decision-endcall-solid);
+
+  --color-mode-real: var(--brand-navy);
+  --color-mode-cached: var(--brand-steel);
+  --color-mode-demo-text: var(--mode-demo-text);
+  --color-mode-demo-bg: var(--mode-demo-bg);
+
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --shadow-card: var(--shadow-card);
+}
+
+@layer base {
+  body {
+    background-color: var(--bg-page);
+    color: var(--text-primary);
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+    margin: 0;
+    padding: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Visible 2px focus ring in steel blue */
+  :focus-visible {
+    outline: 2px solid var(--brand-steel);
+    outline-offset: 2px;
+  }
+
+  /* WCAG Prefers-reduced-motion: 150-200ms subtle transitions */
+  @media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Typography scale according to rules */
+.page-title {
+  font-size: 28px;
+  line-height: 1.25;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.section-title {
+  font-size: 20px;
+  line-height: 1.35;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.card-title {
+  font-size: 16px;
+  line-height: 1.5;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.body-text {
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.caption-text {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+@media print {
+  aside,
+  header,
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background-color: #FFFFFF;
+  }
+  main {
+    padding: 0 !important;
+  }
+}

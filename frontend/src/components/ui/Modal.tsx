@@ -1,73 +1,119 @@
-import { useEffect, type ReactNode } from 'react';
-import { X } from 'lucide-react';
+import React, { useEffect, useRef } from "react";
+import { X } from "lucide-react";
+import { Button } from "./Button";
 
-interface ModalProps {
-  open: boolean;
+export interface ModalProps {
+  isOpen: boolean;
   onClose: () => void;
   title: string;
   subtitle?: string;
-  children: ReactNode;
-  footer?: ReactNode;
-  maxWidthClass?: string;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
 }
 
-export function Modal({
-  open,
+/**
+ * Modal: focus-trapped, ESC closes, returns focus on close.
+ */
+export const Modal: React.FC<ModalProps> = ({
+  isOpen,
   onClose,
   title,
   subtitle,
   children,
   footer,
-  maxWidthClass = 'max-w-lg',
-}: ModalProps) {
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+}) => {
+  const modalRef = useRef<HTMLDivElement>(null);
+  const previousActiveElement = useRef<HTMLElement | null>(null);
 
-  if (!open) return null;
+  useEffect(() => {
+    if (isOpen) {
+      previousActiveElement.current = document.activeElement as HTMLElement;
+
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+          return;
+        }
+
+        if (e.key === "Tab" && modalRef.current) {
+          const focusable = modalRef.current.querySelectorAll<HTMLElement>(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          );
+          if (focusable.length === 0) return;
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+
+          if (e.shiftKey) {
+            if (document.activeElement === first) {
+              e.preventDefault();
+              last.focus();
+            }
+          } else {
+            if (document.activeElement === last) {
+              e.preventDefault();
+              first.focus();
+            }
+          }
+        }
+      };
+
+      window.addEventListener("keydown", handleKeyDown);
+      return () => {
+        window.removeEventListener("keydown", handleKeyDown);
+        previousActiveElement.current?.focus();
+      };
+    }
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="aegis-modal-title"
-      onClick={onClose}
-    >
-      <div
-        className={`animate-alert-in w-full ${maxWidthClass} rounded-xl border border-slate-700/80 bg-[#111827] shadow-2xl`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between gap-3 border-b border-slate-800 px-5 py-4">
-          <div>
-            <h3 id="aegis-modal-title" className="text-sm font-semibold text-[#f8fafc]">
-              {title}
-            </h3>
-            {subtitle && <p className="mt-0.5 text-xs text-[#94a3b8]">{subtitle}</p>}
+    <div className="fixed inset-0 z-50 overflow-y-auto" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="min-h-screen px-4 text-center flex items-center justify-center">
+        {/* Backdrop */}
+        <div
+          className="fixed inset-0 bg-black/40 backdrop-blur-xs transition-opacity"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+
+        {/* Modal Dialog */}
+        <div
+          ref={modalRef}
+          className="inline-block w-full max-w-lg my-8 p-6 text-left align-middle transition-all transform bg-[var(--surface)] border border-[var(--border)] shadow-xl rounded-[12px] relative z-10"
+        >
+          <div className="flex items-start justify-between pb-4 border-b border-[var(--border)]">
+            <div>
+              <h3 className="text-[20px] font-semibold text-[var(--text-primary)]">
+                {title}
+              </h3>
+              {subtitle && (
+                <p className="text-[14px] text-[var(--text-secondary)] mt-0.5">
+                  {subtitle}
+                </p>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              aria-label="Close modal"
+              icon={<X className="w-5 h-5 text-[var(--text-secondary)]" />}
+            />
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close modal"
-            className="rounded-md p-1 text-[#94a3b8] hover:bg-[#151e30] hover:text-[#f8fafc]"
-          >
-            <X className="h-4 w-4" />
-          </button>
+
+          <div className="py-4 text-[16px] text-[var(--text-secondary)]">
+            {children}
+          </div>
+
+          {footer && (
+            <div className="pt-4 border-t border-[var(--border)] flex items-center justify-end gap-3">
+              {footer}
+            </div>
+          )}
         </div>
-
-        <div className="px-5 py-4">{children}</div>
-
-        {footer && (
-          <div className="flex items-center justify-end gap-2 border-t border-slate-800 px-5 py-3">
-            {footer}
-          </div>
-        )}
       </div>
     </div>
   );
-}
+};
