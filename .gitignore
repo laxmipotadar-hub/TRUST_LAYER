@@ -1,0 +1,30 @@
+# Environments & Secrets
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# Runtime generated data (keep folder structure)
+data/cache/*.json
+data/reports/*.json
+!data/cache/.gitkeep
+!data/reports/.gitkeep
+!data/scenarios/.gitkeep
+
+# Logs & OS
+*.log
+.DS_Store
