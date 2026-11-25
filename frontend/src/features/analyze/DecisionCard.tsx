@@ -61,6 +61,17 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({
         ? "Aletheia synthetic + Eidos match -> voice-clone override forced BLOCK."
         : copy.decisions.endCall.actionOnHold,
     },
+    END_CALL: {
+      variant: "decision-endcall" as const,
+      icon: <XCircle className="w-10 h-10 text-[var(--decision-endcall-solid)] shrink-0" />,
+      headline: "END_CALL",
+      headlineColor: "text-[var(--decision-endcall-text)]",
+      buttonVariant: "danger" as const,
+      ctaLabel: copy.decisions.endCall.actionLabel,
+      notice: livenessOverrideApplied
+        ? copy.liveness.overrideLine
+        : copy.decisions.endCall.actionOnHold,
+    },
   }[effective];
 
   return (

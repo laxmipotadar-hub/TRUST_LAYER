@@ -4,9 +4,9 @@ export type AnalysisMode = "REAL" | "CACHED" | "SIMULATION";
 export type AnalysisProvenance = "REAL ANALYSIS" | "CACHED ANALYSIS" | "SIMULATION";
 export type TrustVerdict = "SAFE" | "CAUTION" | "THREAT" | "INCOMPLETE ANALYSIS";
 export type FusionBand = "SAFE" | "REVIEW" | "THREAT" | "INCOMPLETE ANALYSIS";
-export type CallDecision = "ALLOW" | "STEP_UP" | "BLOCK" | "INCOMPLETE ANALYSIS";
-export type SignalStatus = "PASS" | "WARN" | "FAIL" | "UNAVAILABLE" | "INCOMPLETE";
-export type LayerRunStatus = "queued" | "running" | "done" | "error" | "skipped";
+export type CallDecision = "ALLOW" | "STEP_UP" | "BLOCK" | "END_CALL" | "INCOMPLETE ANALYSIS";
+export type SignalStatus = "PASS" | "WARN" | "FAIL" | "UNAVAILABLE" | "INCOMPLETE" | "SKIPPED" | "skipped" | "error";
+export type LayerRunStatus = "queued" | "running" | "done" | "error" | "skipped" | "unavailable";
 export type ManipulationCategory = "urgency" | "secrecy" | "authority" | "threat";
 export type GuardState = "IDLE" | "SPEAKING" | "PAUSED_BY_GUARD" | "TRANSFERRED_TO_HUMAN";
 
@@ -30,6 +30,7 @@ export interface FlaggedPhrase {
 export interface VoiceAuthenticityResult {
   score: number | null;
   deepfake_probability: number | null;
+  verdict?: string | null;
   model_name: string;
   model_version?: string;
   status: SignalStatus;
@@ -41,6 +42,8 @@ export interface VoiceAuthenticityResult {
   operation_id?: string | null;
   cost_credits?: number;
   latency_ms?: number | null;
+  error_code?: string | null;
+  http_status?: number | null;
   raw_payload?: Record<string, unknown> | null;
 }
 
@@ -50,6 +53,8 @@ export interface SpeakerIdentityResult {
   claimed_customer_id: string;
   matched_customer_name?: string | null;
   enrolled: boolean;
+  skip_reason?: string | null;
+  similarity_tier?: string | null;
   model_name: string;
   model_version?: string;
   status: SignalStatus;
@@ -60,6 +65,8 @@ export interface SpeakerIdentityResult {
   operation_id?: string | null;
   cost_credits?: number;
   latency_ms?: number | null;
+  error_code?: string | null;
+  http_status?: number | null;
   raw_payload?: Record<string, unknown> | null;
 }
 
@@ -73,8 +80,9 @@ export interface ManipulationMarker {
 }
 
 export interface ManipulationAnalysisResult {
-  score: number;
-  safety_score: number;
+  score: number | null;
+  safety_score: number | null;
+  status?: SignalStatus;
   model_version: string;
   latency_ms?: number | null;
   category_counts: Record<ManipulationCategory | string, number>;
@@ -85,9 +93,10 @@ export interface ManipulationAnalysisResult {
 }
 
 export interface ScamAnalysisResult {
-  risk_score: number;
-  safety_score: number;
-  behavioral_pressure_score: number;
+  risk_score: number | null;
+  safety_score: number | null;
+  behavioral_pressure_score: number | null;
+  status?: SignalStatus;
   categories: string[];
   detected_patterns: string[];
   pressure_tactics: string[];
@@ -144,6 +153,7 @@ export interface CompositeTrustBreakdown {
   final_decision: TrustVerdict;
   band: FusionBand;
   decision: CallDecision;
+  decision_reason?: string | null;
   liveness_override_applied: boolean;
   voice_clone_override_applied?: boolean;
   conflict_overrides?: string[];
@@ -222,12 +232,13 @@ export interface CallSession {
   synthetic_probability: number | null;
   voice_authenticity_score: number | null;
   speaker_match_percentage: number | null;
-  scam_risk_score: number;
-  behavioral_pressure_score: number;
+  scam_risk_score: number | null;
+  behavioral_pressure_score: number | null;
   trust_score: number | null;
   verdict: TrustVerdict;
   band: FusionBand;
   decision: CallDecision;
+  decision_reason?: string | null;
   model_status: Record<string, string>;
   voice_authenticity: VoiceAuthenticityResult;
   speaker_identity: SpeakerIdentityResult;
@@ -251,12 +262,13 @@ export interface UnifiedCallAnalysisResponse {
   synthetic_probability: number | null;
   voice_authenticity: number | null;
   speaker_match_percentage: number | null;
-  scam_risk_score: number;
-  behavioral_pressure_score: number;
+  scam_risk_score: number | null;
+  behavioral_pressure_score: number | null;
   trust_score: number | null;
   verdict: TrustVerdict;
   band: FusionBand;
   decision: CallDecision;
+  decision_reason?: string | null;
   evidence: EvidenceEvent[];
   timestamp: string;
   model_status: Record<string, string>;
@@ -422,8 +434,10 @@ export interface ChallengeCheckItem {
 export interface ChallengeVerifyResponse {
   challenge_id: string;
   passed: boolean;
+  status?: "passed" | "failed" | "incomplete";
+  reason?: string | null;
   phrase_similarity: number;
-  liveness_status: "PASS" | "FAIL";
+  liveness_status: "PASS" | "FAIL" | "INCOMPLETE";
   capture_mode: string;
   notes: string;
   explanation: string;

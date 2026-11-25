@@ -28,15 +28,15 @@ def get_health() -> HealthResponse:
     missing = []
     if not settings.detectifai_configured:
         missing.append("DETECTIF_API_KEY")
-    if not settings.gemini_configured:
-        missing.append("GEMINI_API_KEY")
+    if not settings.groq_configured:
+        missing.append("GROQ_API_KEY")
 
     note = (
-        "All Real Mode AI providers configured on backend."
+        "All Real Mode AI providers (DetectifAI and Groq) configured on backend."
         if not missing
         else (
             f"Missing {', '.join(missing)} on server. "
-            "REAL mode reports UNAVAILABLE for unconfigured DetectifAI calls and deterministic SIMULATION fallback for transcripts."
+            "REAL mode reports UNAVAILABLE for unconfigured AI calls."
         )
     )
 
@@ -45,7 +45,9 @@ def get_health() -> HealthResponse:
         app_mode=state["app_mode"],
         cache_enabled=state["cache_enabled"],
         detectifai_configured=settings.detectifai_configured,
-        gemini_configured=settings.gemini_configured,
+        groq_configured=settings.groq_configured,
+        detectifai="SET" if settings.detectifai_configured else "NOT SET",
+        groq="SET" if settings.groq_configured else "NOT SET",
         active_calls_count=repo.count_calls(),
         voiceprints_count=len(repo.list_voiceprints()),
         real_mode_note=note,
@@ -66,9 +68,10 @@ def get_settings() -> SettingsResponse:
         ema_alpha=state["ema_alpha"],
         language=state["language"],
         detectifai_configured=settings.detectifai_configured,
-        gemini_configured=settings.gemini_configured,
+        groq_configured=settings.groq_configured,
         detectifai_base_url=settings.detectif_api_base_url,
-        gemini_model=settings.gemini_model,
+        groq_stt_model=settings.groq_stt_model,
+        groq_llm_model=settings.groq_llm_model,
     )
 
 
@@ -97,9 +100,10 @@ def read_secrets_status() -> SecretsStatusResponse:
 def save_server_secrets(payload: SecretsUpdateRequest) -> SecretsStatusResponse:
     return update_server_secrets(
         detectif_api_key=payload.detectif_api_key,
-        gemini_api_key=payload.gemini_api_key,
+        groq_api_key=payload.groq_api_key,
         detectif_api_base_url=payload.detectif_api_base_url,
-        gemini_model=payload.gemini_model,
+        groq_stt_model=payload.groq_stt_model,
+        groq_llm_model=payload.groq_llm_model,
     )
 
 

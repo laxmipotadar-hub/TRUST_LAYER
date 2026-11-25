@@ -1,8 +1,18 @@
 import React, { useState } from "react";
-import { Shield, UserCheck, FileWarning, AlertTriangle, ChevronDown, ChevronUp, Code2 } from "lucide-react";
+import {
+  Shield,
+  UserCheck,
+  FileWarning,
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Code2,
+  RotateCcw,
+} from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { StatusChip } from "../../components/ui/StatusChip";
 import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
 import { Skeleton } from "../../components/ui/Skeleton";
 import type { CallSession, LayerRunStatus } from "../../types";
 import type { LayerStatuses } from "../../context/AnalysisContext";
@@ -12,12 +22,14 @@ export interface LayerCardsGridProps {
   call: CallSession | null;
   statuses: LayerStatuses;
   isLoading: boolean;
+  onRetryEidos?: () => void;
 }
 
 interface ExpandableLayerProps {
   title: string;
   icon: React.ReactNode;
   status: LayerRunStatus;
+  statusLabel?: string;
   scoreLabel: string;
   latencyMs?: number | null;
   modelVersion?: string;
@@ -31,6 +43,7 @@ const ExpandableLayerCard: React.FC<ExpandableLayerProps> = ({
   title,
   icon,
   status,
+  statusLabel,
   scoreLabel,
   latencyMs,
   modelVersion,
@@ -50,7 +63,7 @@ const ExpandableLayerCard: React.FC<ExpandableLayerProps> = ({
           <h3 className="card-title truncate">{title}</h3>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <StatusChip status={status} />
+          <StatusChip status={status} label={statusLabel} />
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
@@ -65,7 +78,9 @@ const ExpandableLayerCard: React.FC<ExpandableLayerProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-2 text-[14px]">
         <span className="font-bold text-[var(--text-primary)]">{scoreLabel}</span>
         <div className="flex flex-wrap items-center gap-2 text-[14px] text-[var(--text-muted)] font-mono">
-          <span>{latencyMs !== null && latencyMs !== undefined ? `${latencyMs.toFixed(0)} ms` : "— ms"}</span>
+          <span>
+            {latencyMs !== null && latencyMs !== undefined ? `${latencyMs.toFixed(0)} ms` : "— ms"}
+          </span>
           <span>•</span>
           <span>{modelVersion || "v1"}</span>
         </div>
@@ -106,6 +121,7 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
   call,
   statuses,
   isLoading,
+  onRetryEidos,
 }) => {
   if (isLoading) {
     return (
@@ -127,6 +143,24 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
   const e = call.speaker_identity;
   const s = call.scam_analysis;
   const m = call.manipulation_analysis;
+
+  const rawDecision = (e.raw_payload as { result?: { decision?: string } } | null)?.result?.decision;
+  const eidosMatched =
+    statuses.eidos === "done" &&
+    (e.status === "PASS" || rawDecision === "match") &&
+    Boolean(e.matched_customer_name);
+
+  const eidosSkippedLabel =
+    e.skip_reason === "aletheia_fake"
+      ? "Skipped — Eidos not needed, 1 call saved"
+      : e.skip_reason === "no_voice_id"
+      ? "Skipped — No live Voice ID enrolled"
+      : "Skipped";
+
+  const scriptUnavailable =
+    s.status === "UNAVAILABLE" || s.risk_score === null || s.safety_score === null;
+  const manipUnavailable =
+    m.status === "UNAVAILABLE" || m.score === null || m.safety_score === null;
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -161,7 +195,9 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
         icon={<UserCheck className="w-4 h-4 text-[var(--brand-steel)] shrink-0" />}
         status={statuses.eidos}
         scoreLabel={
-          e.score !== null && e.score !== undefined
+          statuses.eidos === "skipped"
+            ? eidosSkippedLabel
+            : e.score !== null && e.score !== undefined
             ? `Speaker Score ${e.score.toFixed(1)}/100 · ${formatSimilarity(e.match_confidence)}`
             : "Speaker Score Unavailable"
         }
@@ -171,14 +207,39 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
         summary={e.detail}
         rawPayload={e.raw_payload || e}
       >
-        <div className="flex flex-wrap gap-2">
-          <Badge variant={e.enrolled ? "success" : "warning"} size="sm">
-            {e.enrolled ? "Enrolled voiceprint" : "Unenrolled (50.0 neutral)"}
-          </Badge>
-          {e.matched_customer_name && (
-            <Badge variant="info" size="sm">
-              Matched: {e.matched_customer_name}
+        <div className="flex flex-wrap items-center gap-2">
+          {statuses.eidos === "skipped" ? (
+            <Badge variant="neutral" size="sm">
+              {eidosSkippedLabel}
             </Badge>
+          ) : statuses.eidos === "error" ? (
+            <>
+              <Badge variant="danger" size="sm">
+                {e.http_status ? `HTTP ${e.http_status} Error` : "Eidos Error"}
+              </Badge>
+              {onRetryEidos && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={onRetryEidos}
+                  icon={<RotateCcw className="w-3.5 h-3.5" />}
+                >
+                  Retry
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              <Badge variant={e.enrolled ? "success" : "warning"} size="sm">
+                {e.enrolled ? "Enrolled voiceprint" : "Unenrolled (50.0 neutral)"}
+              </Badge>
+              {eidosMatched && e.matched_customer_name && (
+                <Badge variant="info" size="sm">
+                  Matched: {e.matched_customer_name}
+                </Badge>
+              )}
+            </>
           )}
         </div>
       </ExpandableLayerCard>
@@ -188,14 +249,19 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
         title="Layer 3 · Script Analysis (LLM / Rules)"
         icon={<FileWarning className="w-4 h-4 text-[var(--decision-stepup-solid)] shrink-0" />}
         status={statuses.script}
-        scoreLabel={`Safety ${s.safety_score.toFixed(1)}/100 (Risk ${s.risk_score.toFixed(1)})`}
+        statusLabel={scriptUnavailable ? "Unavailable" : undefined}
+        scoreLabel={
+          scriptUnavailable
+            ? "Unavailable (no transcript)"
+            : `Safety ${s.safety_score!.toFixed(1)}/100 (Risk ${s.risk_score!.toFixed(1)})`
+        }
         latencyMs={s.latency_ms}
         modelVersion={s.model_version || s.engine_used}
         operationId={s.operation_id}
         summary={s.summary}
         rawPayload={s.raw_payload || s}
       >
-        {s.detected_patterns.length > 0 && (
+        {!scriptUnavailable && s.detected_patterns.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {s.detected_patterns.map((pat) => (
               <Badge key={pat} variant="warning" size="sm">
@@ -204,7 +270,7 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
             ))}
           </div>
         )}
-        {s.flagged_phrases.length > 0 && (
+        {!scriptUnavailable && s.flagged_phrases.length > 0 && (
           <ul className="space-y-1.5">
             {s.flagged_phrases.map((fp, idx) => (
               <li
@@ -228,34 +294,47 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
         title="Layer 4 · Manipulation Analysis"
         icon={<AlertTriangle className="w-4 h-4 text-[var(--decision-endcall-solid)] shrink-0" />}
         status={statuses.manipulation}
-        scoreLabel={`Safety ${m.safety_score.toFixed(1)}/100 (Pressure ${m.score.toFixed(1)})`}
+        statusLabel={manipUnavailable ? "Unavailable" : undefined}
+        scoreLabel={
+          manipUnavailable
+            ? "Unavailable (no transcript)"
+            : `Safety ${m.safety_score!.toFixed(1)}/100 (Pressure ${m.score!.toFixed(1)})`
+        }
         latencyMs={m.latency_ms}
         modelVersion={m.model_version}
-        summary={`Detected ${m.markers.length} manipulation marker(s) across urgency, secrecy, authority, and threat categories.`}
+        summary={
+          manipUnavailable
+            ? "Manipulation analysis unavailable (no caller transcript supplied)."
+            : `Detected ${m.markers.length} manipulation marker(s) across urgency, secrecy, authority, and threat categories.`
+        }
         rawPayload={m.raw_payload || m}
       >
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {(["urgency", "secrecy", "authority", "threat"] as const).map((cat) => (
-            <div
-              key={cat}
-              className="px-2.5 py-1.5 rounded bg-[var(--fill-subtle)] border border-[var(--border)] flex items-center justify-between"
-            >
-              <span className="capitalize text-[var(--text-secondary)]">{cat}</span>
-              <span className="font-bold text-[var(--text-primary)]">{m.category_counts[cat] || 0}</span>
-            </div>
-          ))}
-        </div>
-        {m.markers.length > 0 && (
+        {!manipUnavailable && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {(["urgency", "secrecy", "authority", "threat"] as const).map((cat) => (
+              <div
+                key={cat}
+                className="px-2.5 py-1.5 rounded bg-[var(--fill-subtle)] border border-[var(--border)] flex items-center justify-between"
+              >
+                <span className="capitalize text-[var(--text-secondary)]">{cat}</span>
+                <span className="font-bold text-[var(--text-primary)]">
+                  {m.category_counts[cat] || 0}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {!manipUnavailable && m.markers.length > 0 && (
           <ul className="space-y-1.5">
             {m.markers.slice(0, 4).map((mk, idx) => (
               <li
                 key={idx}
                 className="p-2 rounded bg-[var(--fill-subtle)] border border-[var(--border)]"
               >
-                <span className="font-semibold uppercase text-[var(--decision-stepup-text)]">
+                <span className="font-semibold uppercase text-[14px] text-[var(--decision-endcall-text)]">
                   [{mk.category}]
                 </span>{" "}
-                <span>"{mk.excerpt}"</span>
+                <span className="text-[var(--text-primary)]">{mk.excerpt}</span>
               </li>
             ))}
           </ul>

@@ -16,6 +16,7 @@ import { aegisApi, type ExtendedApiError } from "../lib/api";
 import { useBotGuard } from "../features/botguard/useBotGuard";
 
 export interface LayerStatuses {
+  asr: LayerRunStatus;
   aletheia: LayerRunStatus;
   eidos: LayerRunStatus;
   script: LayerRunStatus;
@@ -62,6 +63,8 @@ interface AnalysisContextType {
     duration_hint_sec?: number;
   }) => Promise<CallSession | null>;
   executeCallAction: (action: string, note?: string) => Promise<void>;
+  retryLastAnalysis: () => Promise<void>;
+  clearCurrentCall: () => void;
   submitFeedback: (
     callId: string,
     payload: { is_scam: boolean | null; label: "SCAM" | "LEGITIMATE" | "UNCERTAIN"; notes: string }
@@ -78,28 +81,67 @@ const AnalysisContext = createContext<AnalysisContextType | undefined>(undefined
 
 function deriveLayerStatuses(call: CallSession | null, isLoading: boolean): LayerStatuses {
   if (isLoading) {
-    return { aletheia: "running", eidos: "queued", script: "running", manipulation: "running" };
+    return {
+      asr: "running",
+      aletheia: "running",
+      eidos: "queued",
+      script: "running",
+      manipulation: "running",
+    };
   }
   if (!call) {
-    return { aletheia: "queued", eidos: "queued", script: "queued", manipulation: "queued" };
+    return {
+      asr: "queued",
+      aletheia: "queued",
+      eidos: "queued",
+      script: "queued",
+      manipulation: "queued",
+    };
   }
   const mapSt = (st: string): LayerRunStatus => {
-    if (st === "UNAVAILABLE" || st === "ERROR" || st === "AUTH_ERROR" || st === "INSUFFICIENT_CREDITS") {
+    if (st === "UNAVAILABLE") return "unavailable";
+    if (
+      st === "ERROR" ||
+      st === "AUTH_ERROR" ||
+      st === "INSUFFICIENT_CREDITS" ||
+      st === "RATE_LIMITED" ||
+      st === "TIMEOUT" ||
+      st === "NOT_FOUND" ||
+      st === "PROVIDER_ERROR" ||
+      st === "INVALID_RESPONSE"
+    ) {
       return "error";
     }
-    if (st === "SKIPPED") return "skipped";
+    if (st === "SKIPPED" || st === "skipped") return "skipped";
     return "done";
   };
+  const eidosStatusRaw = String(call.speaker_identity.status || "");
+  const eidosSt: LayerRunStatus =
+    eidosStatusRaw.toLowerCase() === "skipped" || call.model_status?.eidos === "SKIPPED"
+      ? "skipped"
+      : eidosStatusRaw === "UNAVAILABLE" || eidosStatusRaw === "error"
+      ? "error"
+      : mapSt(call.model_status?.eidos || "OK");
+  const scriptUnavailable =
+    call.scam_analysis.status === "UNAVAILABLE" ||
+    call.scam_analysis.risk_score === null ||
+    call.model_status?.scam_analysis === "UNAVAILABLE";
+  const manipUnavailable =
+    call.manipulation_analysis.status === "UNAVAILABLE" ||
+    call.manipulation_analysis.score === null ||
+    call.model_status?.manipulation === "UNAVAILABLE";
+  const hasRealTranscript = call.transcript.some(
+    (seg) => seg.text.trim() && !seg.text.trim().startsWith("[Audio sample:")
+  );
+  const asrUnavailable =
+    call.model_status?.asr === "UNAVAILABLE" || (!hasRealTranscript && scriptUnavailable);
+
   return {
+    asr: asrUnavailable ? "unavailable" : "done",
     aletheia: call.voice_authenticity.status === "UNAVAILABLE" ? "error" : "done",
-    eidos:
-      call.model_status?.eidos === "SKIPPED"
-        ? "skipped"
-        : call.speaker_identity.status === "UNAVAILABLE"
-        ? "error"
-        : "done",
-    script: mapSt(call.model_status?.scam_analysis || "OK"),
-    manipulation: "done",
+    eidos: eidosSt,
+    script: scriptUnavailable ? "unavailable" : mapSt(call.model_status?.scam_analysis || "OK"),
+    manipulation: manipUnavailable ? "unavailable" : "done",
   };
 }
 
@@ -121,6 +163,14 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
   const [isLivenessModalOpen, setLivenessModalOpen] = useState<boolean>(false);
   const [isTechnicalDrawerOpen, setTechnicalDrawerOpen] = useState<boolean>(false);
+  const lastAudioParamsRef = React.useRef<{
+    file?: Blob;
+    filename?: string;
+    transcript_text: string;
+    claimed_customer_id: string;
+    caller_label?: string;
+    duration_hint_sec?: number;
+  } | null>(null);
 
   const botGuard = useBotGuard(currentCall, () => {});
 
@@ -274,12 +324,13 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setIsLoading(true);
       setError(null);
       setActiveScenarioId(null);
+      lastAudioParamsRef.current = params;
       botGuard.resetGuard();
       try {
         const res = await aegisApi.analyzeCall({
           ...params,
           execution_mode: executionMode,
-          previous_score: currentCall?.trust_score ?? null,
+          previous_score: null,
         });
         setCurrentCall(res.session);
         await aegisApi.getCallReport(res.call_id).catch(() => null);
@@ -330,6 +381,22 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [currentCall, refreshCalls, refreshReports]
   );
 
+  const clearCurrentCall = useCallback(() => {
+    setCurrentCall(null);
+    setError(null);
+    setActiveScenarioId(null);
+  }, []);
+
+  const retryLastAnalysis = useCallback(async () => {
+    if (lastAudioParamsRef.current) {
+      await analyzeLiveAudio(lastAudioParamsRef.current);
+      return;
+    }
+    if (activeScenarioId === "S1" || activeScenarioId === "S2" || activeScenarioId === "S3" || activeScenarioId === "S4") {
+      await runScenario(activeScenarioId);
+    }
+  }, [analyzeLiveAudio, activeScenarioId, runScenario]);
+
   const applyUpdatedCall = useCallback(
     (call: CallSession) => {
       setCurrentCall(call);
@@ -374,6 +441,8 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         runScenario,
         analyzeLiveAudio,
         executeCallAction,
+        retryLastAnalysis,
+        clearCurrentCall,
         submitFeedback,
         applyUpdatedCall,
         refreshSystem,

@@ -10,8 +10,8 @@ AnalysisMode = Literal["REAL", "CACHED", "SIMULATION"]
 AnalysisProvenance = Literal["REAL ANALYSIS", "CACHED ANALYSIS", "SIMULATION"]
 TrustVerdict = Literal["SAFE", "CAUTION", "THREAT", "INCOMPLETE ANALYSIS"]
 FusionBand = Literal["SAFE", "REVIEW", "THREAT", "INCOMPLETE ANALYSIS"]
-CallDecision = Literal["ALLOW", "STEP_UP", "BLOCK", "INCOMPLETE ANALYSIS"]
-SignalStatus = Literal["PASS", "WARN", "FAIL", "UNAVAILABLE", "INCOMPLETE"]
+CallDecision = Literal["ALLOW", "STEP_UP", "BLOCK", "END_CALL", "INCOMPLETE ANALYSIS"]
+SignalStatus = Literal["PASS", "WARN", "FAIL", "UNAVAILABLE", "INCOMPLETE", "SKIPPED", "skipped", "error"]
 RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
 EvidenceSeverity = Literal["INFO", "WARNING", "CRITICAL"]
 EvidenceCategory = Literal["VOICE", "IDENTITY", "SCAM", "PRESSURE", "LIVENESS", "POLICY"]
@@ -52,7 +52,9 @@ class HealthResponse(BaseModel):
     app_mode: AppMode
     cache_enabled: bool
     detectifai_configured: bool
-    gemini_configured: bool
+    groq_configured: bool
+    detectifai: Literal["SET", "NOT SET"] = "NOT SET"
+    groq: Literal["SET", "NOT SET"] = "NOT SET"
     active_calls_count: int
     voiceprints_count: int
     real_mode_note: str
@@ -69,9 +71,10 @@ class SettingsResponse(BaseModel):
     ema_alpha: float = Field(default=0.45, ge=0.05, le=1.0)
     language: str = "en"
     detectifai_configured: bool
-    gemini_configured: bool
+    groq_configured: bool
     detectifai_base_url: str
-    gemini_model: str
+    groq_stt_model: str
+    groq_llm_model: str
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -88,15 +91,17 @@ class SettingsUpdateRequest(BaseModel):
 
 class SecretsUpdateRequest(BaseModel):
     detectif_api_key: str | None = None
-    gemini_api_key: str | None = None
+    groq_api_key: str | None = None
     detectif_api_base_url: str | None = None
-    gemini_model: str | None = None
+    groq_stt_model: str | None = None
+    groq_llm_model: str | None = None
 
 
 class SecretsStatusResponse(BaseModel):
     detectifai_configured: bool
-    gemini_configured: bool
+    groq_configured: bool
     detectif_key_hint: str = "NOT SET"
-    gemini_key_hint: str = "NOT SET"
+    groq_key_hint: str = "NOT SET"
     detectifai_base_url: str
-    gemini_model: str
+    groq_stt_model: str
+    groq_llm_model: str

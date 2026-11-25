@@ -255,10 +255,32 @@ async def analyze_scam_transcript(
 ) -> ScamAnalysisResult:
     """Analyze transcript with Gemini API in REAL mode, or cached/deterministic fallback."""
     t0 = time.perf_counter()
+    cleaned_text = transcript_text.strip()
+    if analysis_mode == "REAL" and not cleaned_text:
+        return ScamAnalysisResult(
+            risk_score=None,
+            safety_score=None,
+            behavioral_pressure_score=None,
+            status="UNAVAILABLE",
+            categories=[],
+            detected_patterns=[],
+            pressure_tactics=[],
+            flagged_phrases=[],
+            engine_used="Unavailable (No Transcript)",
+            model_version="unavailable",
+            latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+            provenance="REAL ANALYSIS",
+            summary="No caller transcript or ASR text available; L3 Script Analysis is unavailable.",
+            recommended_action="Capture spoken transcript before relying on script risk.",
+            fallback_used=False,
+            fallback_reason="No transcript supplied and audio transcription did not run.",
+            cache_hit=False,
+        )
+
     cache_key = cache_service.compute_request_hash(
         provider="gemini_scam",
         params={"model": settings.gemini_model},
-        text=transcript_text.strip(),
+        text=cleaned_text,
     )
     if analysis_mode == "CACHED":
         cached = cache_service.get(cache_key)
@@ -301,10 +323,17 @@ async def analyze_scam_transcript(
     if not settings.gemini_configured:
         det = run_deterministic_scam_fallback(
             transcript_text,
-            provenance="SIMULATION",
-            fallback_reason="GEMINI_API_KEY missing on server; activated deterministic keyword & weighted-rule fallback.",
+            provenance="REAL ANALYSIS",
+            fallback_reason="GEMINI_API_KEY missing on server; activated deterministic keyword & weighted-rule analyzer.",
         )
-        return det.model_copy(update={"latency_ms": round((time.perf_counter() - t0) * 1000.0, 2), "model_version": "rule-engine-v1", "raw_payload": format_scam_contract_dict(det)})
+        return det.model_copy(
+            update={
+                "provenance": "REAL ANALYSIS",
+                "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                "model_version": "rule-engine-v1",
+                "raw_payload": format_scam_contract_dict(det),
+            }
+        )
 
     if not bypass_cache:
         cached = cache_service.get(cache_key)
@@ -384,7 +413,7 @@ async def analyze_scam_transcript(
     except Exception as exc:
         det = run_deterministic_scam_fallback(
             transcript_text,
-            provenance="SIMULATION",
+            provenance="REAL ANALYSIS",
             fallback_reason=(
                 f"Gemini API unavailable ({exc.__class__.__name__}); "
                 "activated deterministic keyword & weighted-rule fallback."
@@ -392,6 +421,7 @@ async def analyze_scam_transcript(
         )
         return det.model_copy(
             update={
+                "provenance": "REAL ANALYSIS",
                 "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
                 "model_version": "rule-engine-v1",
                 "raw_payload": format_scam_contract_dict(det),
@@ -419,6 +449,25 @@ def extract_manipulation_analysis(
 ) -> ManipulationAnalysisResult:
     """Layer 4 extractor: maps transcript into urgency/secrecy/authority/threat markers + sparkline."""
     t0 = time.perf_counter()
+    cleaned_text = transcript_text.strip()
+    valid_segments = [
+        seg for seg in (transcript_segments or [])
+        if seg.text.strip() and not seg.text.strip().startswith("[Audio sample:")
+    ]
+    if not cleaned_text and not valid_segments:
+        return ManipulationAnalysisResult(
+            score=None,
+            safety_score=None,
+            status="UNAVAILABLE",
+            model_version="unavailable",
+            latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
+            category_counts={"urgency": 0, "secrecy": 0, "authority": 0, "threat": 0},
+            markers=[],
+            sparkline=[],
+            provenance=provenance,
+            raw_payload={"status": "UNAVAILABLE", "reason": "No transcript supplied."},
+        )
+
     segments = transcript_segments or (
         [
             TranscriptSegment(

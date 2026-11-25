@@ -13,7 +13,13 @@ from app.schemas import (
     VoiceprintVerificationEntry,
     VoiceprintVerifyResponse,
 )
-from app.services.eidos_service import delete_speaker_eidos, enroll_speaker_eidos, verify_speaker_eidos
+from app.services.eidos_service import (
+    delete_speaker_eidos,
+    enroll_speaker_eidos,
+    fetch_speakers_eidos,
+    find_existing_speaker_eidos,
+    verify_speaker_eidos,
+)
 
 
 router = APIRouter(prefix="/voiceprints", tags=["voiceprints"])
@@ -21,6 +27,41 @@ router = APIRouter(prefix="/voiceprints", tags=["voiceprints"])
 
 @router.get("", response_model=list[VoiceprintRecord])
 def list_voiceprints() -> list[VoiceprintRecord]:
+    return repo.list_voiceprints()
+
+
+@router.post("/reconcile", response_model=list[VoiceprintRecord])
+async def reconcile_voiceprints() -> list[VoiceprintRecord]:
+    """Import any existing DetectifAI Eidos speakers missing from local voiceprints without re-charging."""
+    remote_speakers = await fetch_speakers_eidos()
+    local_by_cid = {vp.customer_id: vp for vp in repo.list_voiceprints()}
+    for spk in remote_speakers:
+        sid = str(spk.get("speaker_id") or spk.get("id") or "").strip()
+        if not sid:
+            continue
+        existing = local_by_cid.get(sid)
+        if existing and existing.enrollment_source == "REAL ANALYSIS" and existing.provider_speaker_ref == sid:
+            continue
+        now = str(spk.get("created_at") or datetime.now(timezone.utc).isoformat())
+        display = str(spk.get("display_name") or sid).strip()
+        record = VoiceprintRecord(
+            voiceprint_id=existing.voiceprint_id if existing else f"VP-{uuid4().hex[:6].upper()}",
+            customer_id=sid,
+            customer_name=existing.customer_name if existing else display,
+            account_tier=existing.account_tier if existing else "Private Banking",
+            enrollment_purpose="Banking Call Authentication & Fraud Prevention",
+            consent_confirmed=True,
+            consent_timestamp=now,
+            enrolled_at=now,
+            sample_duration_sec=max(5.0, float(spk.get("samples") or 1) * 5.0),
+            enrollment_source="REAL ANALYSIS",
+            provider_speaker_ref=sid,
+            provider_operation_id=existing.provider_operation_id if existing else None,
+            credits_used=0.0,
+            reconciled=True,
+            status="ACTIVE",
+        )
+        repo.add_voiceprint(record)
     return repo.list_voiceprints()
 
 

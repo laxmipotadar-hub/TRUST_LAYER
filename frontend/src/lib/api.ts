@@ -296,7 +296,7 @@ export const aegisApi = {
     return fetchJson<ChallengeSession>("/challenge/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ call_id: callId || null, customer_id: customerId, window_seconds: 15 }),
+      body: JSON.stringify({ call_id: callId || null, customer_id: customerId, window_seconds: 20 }),
     });
   },
 

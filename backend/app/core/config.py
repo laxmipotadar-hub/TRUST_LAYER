@@ -20,8 +20,9 @@ class Settings(BaseSettings):
 
     detectif_api_key: str = ""
     detectif_api_base_url: str = "https://platform.detectif.ai"
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    groq_api_key: str = ""
+    groq_stt_model: str = "whisper-large-v3-turbo"
+    groq_llm_model: str = "llama-3.3-70b-versatile"
 
     app_mode: Literal["DEMO", "REAL"] = "DEMO"
     cache_enabled: bool = True
@@ -54,8 +55,8 @@ class Settings(BaseSettings):
         return bool(self.detectif_api_key.strip())
 
     @property
-    def gemini_configured(self) -> bool:
-        return bool(self.gemini_api_key.strip())
+    def groq_configured(self) -> bool:
+        return bool(self.groq_api_key.strip())
 
 
 settings = Settings()

@@ -37,6 +37,8 @@ class VoiceprintRecord(BaseModel):
     enrollment_source: AnalysisProvenance
     provider_speaker_ref: str | None = None
     provider_operation_id: str | None = None
+    credits_used: Optional[float] = None
+    reconciled: bool = False
     last_verified_at: Optional[str] = None
     last_verification_status: VerificationStatusType = "UNVERIFIED"
     last_match_percentage: Optional[float] = None

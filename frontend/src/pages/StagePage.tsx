@@ -138,7 +138,9 @@ export const StagePage: React.FC = () => {
                   L3 Script Risk
                 </span>
                 <p className="text-[18px] font-bold text-white">
-                  {currentCall.scam_analysis.risk_score.toFixed(1)} / 100
+                  {currentCall.scam_analysis.risk_score !== null
+                    ? `${currentCall.scam_analysis.risk_score.toFixed(1)} / 100`
+                    : "Unavailable"}
                 </p>
               </div>
               <div className="space-y-1">

@@ -912,8 +912,19 @@ export const LiveDemoPage: React.FC = () => {
             <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
               <div className="flex items-center justify-between">
                 <span className="font-bold">Engine: {scriptCall.scam_analysis.engine_used}</span>
-                <Badge variant={scriptCall.scam_analysis.risk_score >= 60 ? "danger" : "warning"}>
-                  Script Risk: {scriptCall.scam_analysis.risk_score.toFixed(1)}/100
+                <Badge
+                  variant={
+                    scriptCall.scam_analysis.risk_score === null
+                      ? "neutral"
+                      : scriptCall.scam_analysis.risk_score >= 60
+                        ? "danger"
+                        : "warning"
+                  }
+                >
+                  Script Risk:{" "}
+                  {scriptCall.scam_analysis.risk_score !== null
+                    ? `${scriptCall.scam_analysis.risk_score.toFixed(1)}/100`
+                    : "Unavailable"}
                 </Badge>
               </div>
               <p className="body-text">{scriptCall.scam_analysis.summary}</p>

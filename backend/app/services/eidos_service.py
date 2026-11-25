@@ -7,6 +7,13 @@ from uuid import uuid4
 import httpx
 
 from app.core.config import settings
+from app.detectif.client import (
+    extract_detectifai_error,
+    log_raw_detectifai_response,
+    parse_eidos_enroll_response,
+    stable_enrollment_idempotency_key,
+    validate_speaker_id,
+)
 from app.repositories.json_store import repo
 from app.schemas import SpeakerIdentityResult
 from app.services.cache_service import cache_service
@@ -14,6 +21,7 @@ from app.services.ledger_service import record_operation
 
 
 NEUTRAL_UNENROLLED_SCORE = 50.0
+EIDOS_VERIFY_COST_CREDITS = 500.0
 
 
 @dataclass
@@ -23,6 +31,8 @@ class EidosEnrollOutcome:
     provider_operation_id: str | None
     status: str
     detail: str
+    credits_used: float = 0.0
+    reconciled: bool = False
 
 
 @dataclass
@@ -31,10 +41,45 @@ class EidosVerifyEvaluation:
     model_status: str  # OK | CACHED | UNENROLLED | UNAVAILABLE | AUTH_ERROR | RATE_LIMITED | TIMEOUT | INVALID_RESPONSE | ERROR
 
 
+async def fetch_speakers_eidos() -> list[dict]:
+    """Fetch enrolled speaker profiles from DetectifAI GET /v1/speakers."""
+    if not settings.detectifai_configured:
+        return []
+    url = f"{settings.detectif_api_base_url.rstrip('/')}/v1/speakers"
+    headers = {"Authorization": f"Bearer {settings.detectif_api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                return []
+            body = resp.json()
+            if isinstance(body, dict) and isinstance(body.get("data"), list):
+                return [item for item in body["data"] if isinstance(item, dict)]
+            if isinstance(body, list):
+                return [item for item in body if isinstance(item, dict)]
+    except Exception:
+        return []
+    return []
+
+
+async def find_existing_speaker_eidos(speaker_id: str) -> dict | None:
+    """Return existing DetectifAI speaker record if speaker_id is already enrolled on provider."""
+    clean = speaker_id.strip()
+    if not settings.detectifai_configured or not clean:
+        return None
+    speakers = await fetch_speakers_eidos()
+    for spk in speakers:
+        if str(spk.get("speaker_id") or spk.get("id") or "").strip() == clean:
+            return spk
+    return None
+
+
 async def enroll_speaker_eidos(
     audio_bytes: bytes,
     speaker_id: str,
     filename: str = "enroll.wav",
+    display_name: str | None = None,
+    idempotency_key: str | None = None,
 ) -> EidosEnrollOutcome:
     """Isolated DetectifAI Eidos enrollment via POST /v1/speakers/enroll."""
     if not settings.detectifai_configured:
@@ -46,90 +91,111 @@ async def enroll_speaker_eidos(
             detail="DETECTIF_API_KEY not configured on server; Eidos live enrollment skipped.",
         )
 
+    try:
+        clean_speaker_id = validate_speaker_id(speaker_id)
+    except ValueError as exc:
+        return EidosEnrollOutcome(
+            success=False,
+            provider_speaker_ref=None,
+            provider_operation_id=None,
+            status="INVALID_SPEAKER_ID",
+            detail=str(exc),
+        )
+
+    content_type = "audio/wav"
+    clean_name = filename or "enroll.wav"
+    if audio_bytes[:4] != b"RIFF" and clean_name.lower().endswith(".webm"):
+        content_type = "audio/webm"
+
+    stable_key = idempotency_key or stable_enrollment_idempotency_key(clean_speaker_id, audio_bytes)
     url = f"{settings.detectif_api_base_url.rstrip('/')}/v1/speakers/enroll"
     headers = {
         "Authorization": f"Bearer {settings.detectif_api_key}",
-        "Idempotency-Key": str(uuid4()),
+        "Idempotency-Key": stable_key,
     }
-    files = {"file": (filename, audio_bytes, "audio/wav")}
-    data = {"speaker_id": speaker_id}
+    files = {"file": (clean_name, audio_bytes, content_type)}
+    data: dict[str, str] = {"speaker_id": clean_speaker_id}
+    if display_name and display_name.strip():
+        data["display_name"] = display_name.strip()
     t0 = time.perf_counter()
 
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.post(url, headers=headers, files=files, data=data)
             latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-            if resp.status_code in (401, 403):
+            log_raw_detectifai_response("/v1/speakers/enroll", resp)
+            if resp.status_code >= 400:
+                err = extract_detectifai_error(resp, service_label="Eidos enrollment", speaker_ref=clean_speaker_id)
                 return EidosEnrollOutcome(
                     success=False,
                     provider_speaker_ref=None,
                     provider_operation_id=None,
-                    status="AUTH_ERROR",
-                    detail=f"Eidos authentication failed (HTTP {resp.status_code}).",
+                    status=err.model_status,
+                    detail=err.detail,
                 )
-            if resp.status_code == 402:
-                return EidosEnrollOutcome(
-                    success=False,
-                    provider_speaker_ref=None,
-                    provider_operation_id=None,
-                    status="INSUFFICIENT_CREDITS",
-                    detail="DetectifAI credit balance exhausted (HTTP 402).",
-                )
-            if resp.status_code == 429:
-                return EidosEnrollOutcome(
-                    success=False,
-                    provider_speaker_ref=None,
-                    provider_operation_id=None,
-                    status="RATE_LIMITED",
-                    detail="Eidos enrollment rate limit exceeded (HTTP 429).",
-                )
-            resp.raise_for_status()
             body = resp.json()
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as exc:
+        err = extract_detectifai_error(exc, service_label="Eidos enrollment", speaker_ref=clean_speaker_id)
         return EidosEnrollOutcome(
             success=False,
             provider_speaker_ref=None,
             provider_operation_id=None,
-            status="TIMEOUT",
-            detail="Eidos enrollment timed out.",
+            status=err.model_status,
+            detail=err.detail,
+        )
+    except httpx.HTTPStatusError as exc:
+        err = extract_detectifai_error(exc, service_label="Eidos enrollment", speaker_ref=clean_speaker_id)
+        return EidosEnrollOutcome(
+            success=False,
+            provider_speaker_ref=None,
+            provider_operation_id=None,
+            status=err.model_status,
+            detail=err.detail,
         )
     except Exception as exc:
+        err = extract_detectifai_error(exc, service_label="Eidos enrollment", speaker_ref=clean_speaker_id)
         return EidosEnrollOutcome(
             success=False,
             provider_speaker_ref=None,
             provider_operation_id=None,
-            status="ERROR",
-            detail=f"Eidos enrollment error: {exc}",
+            status=err.model_status,
+            detail=err.detail,
         )
 
-    res = body.get("result") if isinstance(body, dict) else None
-    if not isinstance(res, dict):
+    try:
+        parsed = parse_eidos_enroll_response(body, fallback_speaker_id=clean_speaker_id)
+    except ValueError as exc:
         return EidosEnrollOutcome(
             success=False,
             provider_speaker_ref=None,
             provider_operation_id=None,
             status="INVALID_RESPONSE",
-            detail="Eidos enrollment returned unexpected response structure.",
+            detail=f"Eidos enrollment parse error: {exc}",
         )
 
-    op_id = body.get("operation_id") or body.get("request_id") or f"op_enr_{uuid4().hex[:8]}"
+    op_id = parsed.operation_id or f"op_enr_{uuid4().hex[:8]}"
     record_operation(
         operation_id=op_id,
-        call_id=f"ENROLL-{speaker_id}",
+        call_id=f"ENROLL-{clean_speaker_id}",
         service="enroll",
         endpoint="/v1/speakers/enroll",
         mode="FRESH",
         status="done",
-        cost_credits=float(body.get("credits_used") or body.get("cost_credits") or 200.0),
+        cost_credits=parsed.credits_used,
         latency_ms=latency_ms,
         cached=False,
     )
     return EidosEnrollOutcome(
         success=True,
-        provider_speaker_ref=str(res.get("speaker_id", speaker_id)),
+        provider_speaker_ref=parsed.speaker_id,
         provider_operation_id=op_id,
         status="OK",
-        detail="Speaker voiceprint enrolled with DetectifAI Eidos.",
+        detail=(
+            f"Speaker '{parsed.speaker_id}' enrolled with DetectifAI Eidos "
+            f"(op {op_id}, {parsed.credits_used:.0f} credits)."
+        ),
+        credits_used=parsed.credits_used,
+        reconciled=False,
     )
 
 
@@ -182,7 +248,7 @@ async def verify_speaker_eidos(
                 score=None,
                 match_confidence=None,
                 claimed_customer_id=claimed_customer_id,
-                matched_customer_name=enrolled_vp.customer_name,
+                matched_customer_name=None,
                 enrolled=True,
                 status="UNAVAILABLE",
                 provenance="REAL ANALYSIS",
@@ -197,7 +263,7 @@ async def verify_speaker_eidos(
                 score=None,
                 match_confidence=None,
                 claimed_customer_id=claimed_customer_id,
-                matched_customer_name=enrolled_vp.customer_name,
+                matched_customer_name=None,
                 enrolled=True,
                 status="UNAVAILABLE",
                 provenance="REAL ANALYSIS",
@@ -243,80 +309,84 @@ async def verify_speaker_eidos(
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.post(url, headers=headers, files=files, data=form)
             latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-            if resp.status_code == 404:
+            if resp.status_code >= 400:
+                err = extract_detectifai_error(resp, service_label="DetectifAI Eidos", speaker_ref=speaker_ref)
                 return EidosVerifyEvaluation(
                     result=SpeakerIdentityResult(
-                        score=NEUTRAL_UNENROLLED_SCORE,
-                        match_confidence=0.5,
+                        score=None,
+                        match_confidence=None,
                         claimed_customer_id=claimed_customer_id,
                         matched_customer_name=None,
-                        enrolled=False,
-                        status="WARN",
+                        enrolled=err.status_code != 404,
+                        similarity_tier="unavailable",
+                        status="error",
                         provenance="REAL ANALYSIS",
-                        detail=(
-                            f"Speaker '{speaker_ref}' is unregistered on DetectifAI Eidos; "
-                            f"neutral score {NEUTRAL_UNENROLLED_SCORE:.0f} applied."
-                        ),
+                        detail=err.detail,
+                        latency_ms=latency_ms,
+                        error_code=err.error_code,
+                        http_status=err.status_code,
                     ),
-                    model_status="UNENROLLED",
-                )
-            if resp.status_code in (401, 403):
-                return EidosVerifyEvaluation(
-                    result=SpeakerIdentityResult(
-                        score=None,
-                        match_confidence=None,
-                        claimed_customer_id=claimed_customer_id,
-                        matched_customer_name=enrolled_vp.customer_name,
-                        enrolled=True,
-                        status="UNAVAILABLE",
-                        provenance="REAL ANALYSIS",
-                        detail=f"DetectifAI Eidos authentication failed (HTTP {resp.status_code}).",
-                    ),
-                    model_status="AUTH_ERROR",
-                )
-            if resp.status_code == 429:
-                return EidosVerifyEvaluation(
-                    result=SpeakerIdentityResult(
-                        score=None,
-                        match_confidence=None,
-                        claimed_customer_id=claimed_customer_id,
-                        matched_customer_name=enrolled_vp.customer_name,
-                        enrolled=True,
-                        status="UNAVAILABLE",
-                        provenance="REAL ANALYSIS",
-                        detail="DetectifAI Eidos rate limit exceeded (HTTP 429).",
-                    ),
-                    model_status="RATE_LIMITED",
+                    model_status=err.model_status,
                 )
             resp.raise_for_status()
             body = resp.json()
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as exc:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        err = extract_detectifai_error(exc, service_label="DetectifAI Eidos", speaker_ref=speaker_ref)
         return EidosVerifyEvaluation(
             result=SpeakerIdentityResult(
                 score=None,
                 match_confidence=None,
                 claimed_customer_id=claimed_customer_id,
-                matched_customer_name=enrolled_vp.customer_name,
+                matched_customer_name=None,
                 enrolled=True,
-                status="UNAVAILABLE",
+                similarity_tier="unavailable",
+                status="error",
                 provenance="REAL ANALYSIS",
-                detail="DetectifAI Eidos verification timed out.",
+                detail=err.detail,
+                latency_ms=latency_ms,
+                error_code=err.error_code,
             ),
-            model_status="TIMEOUT",
+            model_status=err.model_status,
+        )
+    except httpx.HTTPStatusError as exc:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        err = extract_detectifai_error(exc, service_label="DetectifAI Eidos", speaker_ref=speaker_ref)
+        return EidosVerifyEvaluation(
+            result=SpeakerIdentityResult(
+                score=None,
+                match_confidence=None,
+                claimed_customer_id=claimed_customer_id,
+                matched_customer_name=None,
+                enrolled=err.status_code != 404,
+                similarity_tier="unavailable",
+                status="error",
+                provenance="REAL ANALYSIS",
+                detail=err.detail,
+                latency_ms=latency_ms,
+                error_code=err.error_code,
+                http_status=err.status_code,
+            ),
+            model_status=err.model_status,
         )
     except Exception as exc:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        err = extract_detectifai_error(exc, service_label="DetectifAI Eidos", speaker_ref=speaker_ref)
         return EidosVerifyEvaluation(
             result=SpeakerIdentityResult(
                 score=None,
                 match_confidence=None,
                 claimed_customer_id=claimed_customer_id,
-                matched_customer_name=enrolled_vp.customer_name,
+                matched_customer_name=None,
                 enrolled=True,
-                status="UNAVAILABLE",
+                similarity_tier="unavailable",
+                status="error",
                 provenance="REAL ANALYSIS",
-                detail=f"DetectifAI Eidos request failed: {exc.__class__.__name__}",
+                detail=err.detail,
+                latency_ms=latency_ms,
+                error_code=err.error_code,
             ),
-            model_status="ERROR",
+            model_status=err.model_status,
         )
 
     res = body.get("result") if isinstance(body, dict) else None
@@ -326,9 +396,10 @@ async def verify_speaker_eidos(
                 score=None,
                 match_confidence=None,
                 claimed_customer_id=claimed_customer_id,
-                matched_customer_name=enrolled_vp.customer_name,
+                matched_customer_name=None,
                 enrolled=True,
-                status="UNAVAILABLE",
+                similarity_tier="unavailable",
+                status="error",
                 provenance="REAL ANALYSIS",
                 detail="DetectifAI Eidos returned invalid response structure.",
             ),

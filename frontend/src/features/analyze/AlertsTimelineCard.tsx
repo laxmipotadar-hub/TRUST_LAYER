@@ -2,13 +2,29 @@ import React from "react";
 import { Clock, AlertTriangle, CheckCircle2, Shield, Activity } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { copy } from "../../copy";
-import type { EvidenceEvent } from "../../types";
+import type { EvidenceEvent, ExecutionMode } from "../../types";
 
 export interface AlertsTimelineCardProps {
   events: EvidenceEvent[];
+  executionMode?: ExecutionMode;
 }
 
-export const AlertsTimelineCard: React.FC<AlertsTimelineCardProps> = ({ events }) => {
+function formatEventModeTag(
+  provenance: EvidenceEvent["provenance"],
+  executionMode?: ExecutionMode
+): "REAL" | "CACHED" | "DEMO" {
+  if (executionMode === "LIVE") {
+    return provenance === "CACHED ANALYSIS" ? "CACHED" : "REAL";
+  }
+  if (provenance === "CACHED ANALYSIS") return "CACHED";
+  if (provenance === "REAL ANALYSIS") return "REAL";
+  return "DEMO";
+}
+
+export const AlertsTimelineCard: React.FC<AlertsTimelineCardProps> = ({
+  events,
+  executionMode,
+}) => {
   const ordered = [...events].reverse();
 
   const iconForEvent = (evt: EvidenceEvent) => {
@@ -45,7 +61,7 @@ export const AlertsTimelineCard: React.FC<AlertsTimelineCardProps> = ({ events }
                 <p className="font-semibold text-[var(--text-primary)] leading-snug">{evt.title}</p>
                 <p className="text-[var(--text-secondary)] leading-snug">{evt.description}</p>
                 <span className="caption-text font-mono block mt-0.5">
-                  t={evt.timestamp_sec.toFixed(1)}s · {evt.provenance}
+                  t={evt.timestamp_sec.toFixed(1)}s · {formatEventModeTag(evt.provenance, executionMode)}
                 </span>
               </div>
             </li>

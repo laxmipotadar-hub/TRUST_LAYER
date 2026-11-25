@@ -16,6 +16,9 @@ def _ledger_path():
     return settings.cache_dir / "operations_ledger.json"
 
 
+_ALLOWED_SERVICES = {"aletheia", "eidos", "groq", "enroll", "challenge", "pipeline"}
+
+
 def read_ledger(limit: int = 200) -> list[OperationLedgerEntry]:
     path = _ledger_path()
     if not path.exists():
@@ -25,7 +28,14 @@ def read_ledger(limit: int = 200) -> list[OperationLedgerEntry]:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, list):
                 return []
-            return [OperationLedgerEntry(**row) for row in raw[:limit]]
+            entries: list[OperationLedgerEntry] = []
+            for row in raw[:limit]:
+                if isinstance(row, dict):
+                    fixed = dict(row)
+                    if fixed.get("service") not in _ALLOWED_SERVICES:
+                        fixed["service"] = "groq"
+                    entries.append(OperationLedgerEntry(**fixed))
+            return entries
         except Exception:
             return []
 
@@ -34,7 +44,7 @@ def record_operation(
     *,
     operation_id: str,
     call_id: str,
-    service: Literal["aletheia", "eidos", "gemini", "enroll", "challenge", "pipeline"],
+    service: Literal["aletheia", "eidos", "groq", "enroll", "challenge", "pipeline"],
     endpoint: str,
     mode: LedgerMode,
     status: str = "done",

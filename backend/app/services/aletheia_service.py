@@ -8,6 +8,11 @@ import wave
 import httpx
 
 from app.core.config import settings
+from app.detectif.client import (
+    DetectifHttpErrorInfo,
+    extract_detectifai_error,
+    parse_aletheia_verdict_and_score,
+)
 from app.schemas import SegmentRiskChunk, VoiceAuthenticityResult
 from app.services.cache_service import cache_service
 from app.services.ledger_service import record_operation
@@ -87,7 +92,7 @@ def split_wav_into_sliding_chunks(
 async def _submit_single_chunk(
     audio_bytes: bytes,
     filename: str,
-) -> tuple[dict | None, str, str, float]:
+) -> tuple[dict | None, str, str, float, DetectifHttpErrorInfo | None]:
     """Submit a single 4-120s audio clip to POST /v1/deepfake/detect."""
     url = f"{settings.detectif_api_base_url.rstrip('/')}/v1/deepfake/detect"
     headers = {
@@ -101,26 +106,28 @@ async def _submit_single_chunk(
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.post(url, headers=headers, files=files)
             latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-            if resp.status_code in (401, 403):
-                return None, "AUTH_ERROR", f"DetectifAI authentication failed (HTTP {resp.status_code}).", latency_ms
-            if resp.status_code == 402:
-                return None, "INSUFFICIENT_CREDITS", "DetectifAI credit balance exhausted (HTTP 402).", latency_ms
-            if resp.status_code == 429:
-                return None, "RATE_LIMITED", "DetectifAI Aletheia rate limit exceeded (HTTP 429).", latency_ms
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                err = extract_detectifai_error(resp, service_label="DetectifAI Aletheia")
+                return None, err.model_status, err.detail, latency_ms, err
             data = resp.json()
-    except httpx.TimeoutException:
-        return None, "TIMEOUT", "DetectifAI Aletheia request timed out.", round((time.perf_counter() - t0) * 1000.0, 2)
     except httpx.HTTPStatusError as exc:
-        return None, "ERROR", f"DetectifAI Aletheia HTTP error ({exc.response.status_code}).", round((time.perf_counter() - t0) * 1000.0, 2)
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        err = extract_detectifai_error(exc, service_label="DetectifAI Aletheia")
+        return None, err.model_status, err.detail, latency_ms, err
+    except httpx.TimeoutException as exc:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        err = extract_detectifai_error(exc, service_label="DetectifAI Aletheia")
+        return None, err.model_status, err.detail, latency_ms, err
     except Exception as exc:
-        return None, "ERROR", f"DetectifAI Aletheia request failed: {exc.__class__.__name__}", round((time.perf_counter() - t0) * 1000.0, 2)
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        err = extract_detectifai_error(exc, service_label="DetectifAI Aletheia")
+        return None, err.model_status, err.detail, latency_ms, err
 
     result = data.get("result") if isinstance(data, dict) else None
     if not isinstance(result, dict) or "score" not in result or "verdict" not in result:
-        return None, "INVALID_RESPONSE", "DetectifAI Aletheia returned unexpected response structure.", latency_ms
+        return None, "INVALID_RESPONSE", "DetectifAI Aletheia returned unexpected response structure.", latency_ms, None
 
-    return data, "OK", "Live DetectifAI Aletheia deepfake detection completed.", latency_ms
+    return data, "OK", "Live DetectifAI Aletheia deepfake detection completed.", latency_ms, None
 
 
 async def detect_deepfake_aletheia(
@@ -226,21 +233,25 @@ async def detect_deepfake_aletheia(
     total_credits = 0.0
     total_latency_ms = 0.0
     raw_responses: list[dict] = []
+    chunk_verdicts: list[str] = []
 
     for idx, chunk in enumerate(chunks):
         chunk_name = filename if len(chunks) == 1 else f"chunk_{idx}_{filename}"
-        data, status_code, message, chunk_latency = await _submit_single_chunk(chunk, chunk_name)
+        data, status_code, message, chunk_latency, err_info = await _submit_single_chunk(chunk, chunk_name)
         total_latency_ms += chunk_latency
         if data is None:
             return AletheiaEvaluation(
                 result=VoiceAuthenticityResult(
                     score=None,
                     deepfake_probability=None,
+                    verdict=None,
                     status="UNAVAILABLE",
                     artifacts_detected=[message],
                     provenance="REAL ANALYSIS",
                     detail=message,
                     latency_ms=round(total_latency_ms, 2),
+                    error_code=err_info.error_code if err_info else status_code.lower(),
+                    http_status=err_info.status_code if err_info else None,
                 ),
                 model_status=status_code,
             )
@@ -251,17 +262,21 @@ async def detect_deepfake_aletheia(
         last_operation_id = data.get("operation_id") or last_request_id
         total_credits += float(data.get("credits_used") or data.get("cost_credits") or 24.0)
         chunk_score = float(max(0.0, min(1.0, float(res["score"]))))
-        chunk_scores.append(chunk_score)
-
-        verdict = str(res.get("verdict", "")).lower()
+        verdict, chunk_syn_prob, chunk_auth, _ = parse_aletheia_verdict_and_score(
+            res.get("verdict"), chunk_score
+        )
+        chunk_scores.append(chunk_syn_prob)
+        chunk_verdicts.append(verdict)
         if verdict == "fake":
-            chunk_artifacts.append(f"Chunk {idx + 1}: verdict=fake (score {chunk_score:.2f})")
+            chunk_artifacts.append(f"Chunk {idx + 1}: verdict=fake (synthetic {chunk_syn_prob:.2f})")
         for seg_idx, seg in enumerate(res.get("segments", []) or []):
-            seg_score = float(seg.get("score", 0.0))
-            seg_verdict = str(seg.get("verdict", "real")).lower()
+            seg_raw_score = float(seg.get("score", 0.0))
+            seg_verdict, seg_syn_prob, seg_auth, _ = parse_aletheia_verdict_and_score(
+                seg.get("verdict", verdict), seg_raw_score
+            )
             if seg_verdict == "fake":
                 chunk_artifacts.append(
-                    f"Segment {seg.get('start', 0):.1f}s-{seg.get('end', 0):.1f}s flagged synthetic ({seg_score:.2f})"
+                    f"Segment {seg.get('start', 0):.1f}s-{seg.get('end', 0):.1f}s flagged synthetic ({seg_syn_prob:.2f})"
                 )
             segment_chunks.append(
                 SegmentRiskChunk(
@@ -269,25 +284,44 @@ async def detect_deepfake_aletheia(
                     start_sec=float(seg.get("start", seg_idx * 5.0)),
                     end_sec=float(seg.get("end", (seg_idx + 1) * 5.0)),
                     label=f"Aletheia segment verdict: {seg_verdict}",
-                    risk_level="HIGH" if seg_verdict == "fake" or seg_score >= 0.65 else ("MEDIUM" if seg_score >= 0.35 else "LOW"),
-                    score=round((1.0 - max(0.0, min(1.0, seg_score))) * 100.0, 1),
+                    risk_level=(
+                        "HIGH"
+                        if seg_verdict == "fake"
+                        else ("MEDIUM" if seg_verdict == "not_sure" or seg_syn_prob >= 0.35 else "LOW")
+                    ),
+                    score=seg_auth,
                     provenance="REAL ANALYSIS",
                 )
             )
 
-    max_fake_prob = round(max(chunk_scores), 3)
-    authenticity_score = round((1.0 - max_fake_prob) * 100.0, 1)
-    signal_status = "PASS" if authenticity_score >= 70.0 else ("WARN" if authenticity_score >= 45.0 else "FAIL")
+    overall_verdict = (
+        "fake"
+        if "fake" in chunk_verdicts
+        else ("not_sure" if "not_sure" in chunk_verdicts else "real")
+    )
+    if overall_verdict == "real":
+        max_fake_prob = round(max(chunk_scores), 3)
+        authenticity_score = round((1.0 - max_fake_prob) * 100.0, 1)
+        signal_status = "PASS"
+    elif overall_verdict == "fake":
+        max_fake_prob = round(max(chunk_scores), 3)
+        authenticity_score = round((1.0 - max_fake_prob) * 100.0, 1)
+        signal_status = "FAIL"
+    else:
+        max_fake_prob = round(max(chunk_scores), 3)
+        authenticity_score = round((1.0 - max_fake_prob) * 100.0, 1)
+        signal_status = "WARN"
 
     normalized = VoiceAuthenticityResult(
         score=authenticity_score,
         deepfake_probability=max_fake_prob,
+        verdict=overall_verdict,
         status=signal_status,
         artifacts_detected=chunk_artifacts,
         provenance="REAL ANALYSIS",
         detail=(
-            f"DetectifAI Aletheia evaluated {len(chunks)} audio clip(s): "
-            f"synthetic probability {max_fake_prob:.3f}."
+            f"DetectifAI Aletheia verdict='{overall_verdict}' across {len(chunks)} clip(s): "
+            f"authenticity {authenticity_score:.1f}/100, synthetic likelihood {max_fake_prob:.3f}."
         ),
         cache_hit=False,
         request_id=last_request_id,

@@ -69,7 +69,8 @@ export const IntelligencePage: React.FC = () => {
 
   const scam = activeCall.scam_analysis;
   const manip = activeCall.manipulation_analysis;
-  const sparkPoints = manip.sparkline.length > 0 ? manip.sparkline : [manip.score];
+  const sparkPoints =
+    manip.sparkline.length > 0 ? manip.sparkline : manip.score !== null ? [manip.score] : [0];
   const svgWidth = 360;
   const svgHeight = 80;
   const polylinePts = sparkPoints
@@ -153,10 +154,16 @@ export const IntelligencePage: React.FC = () => {
             </div>
             <Badge
               variant={
-                scam.risk_score >= 65 ? "danger" : scam.risk_score >= 30 ? "warning" : "success"
+                scam.risk_score === null
+                  ? "neutral"
+                  : scam.risk_score >= 65
+                    ? "danger"
+                    : scam.risk_score >= 30
+                      ? "warning"
+                      : "success"
               }
             >
-              Risk {scam.risk_score.toFixed(1)}/100
+              {scam.risk_score !== null ? `Risk ${scam.risk_score.toFixed(1)}/100` : "Unavailable"}
             </Badge>
           </div>
 
@@ -252,9 +259,17 @@ export const IntelligencePage: React.FC = () => {
               <h2 className="section-title">L4: Manipulation &amp; Pressure Analysis</h2>
             </div>
             <Badge
-              variant={manip.score >= 60 ? "danger" : manip.score >= 25 ? "warning" : "success"}
+              variant={
+                manip.score === null
+                  ? "neutral"
+                  : manip.score >= 60
+                    ? "danger"
+                    : manip.score >= 25
+                      ? "warning"
+                      : "success"
+              }
             >
-              Pressure {manip.score.toFixed(1)}/100
+              {manip.score !== null ? `Pressure ${manip.score.toFixed(1)}/100` : "Unavailable"}
             </Badge>
           </div>
 

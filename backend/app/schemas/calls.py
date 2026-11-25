@@ -41,6 +41,7 @@ class FlaggedPhrase(BaseModel):
 class VoiceAuthenticityResult(BaseModel):
     score: Optional[float] = Field(default=None, ge=0, le=100)
     deepfake_probability: Optional[float] = Field(default=None, ge=0, le=1)
+    verdict: Optional[str] = None
     model_name: str = "DetectifAI Aletheia"
     model_version: str = "aletheia-v1"
     status: SignalStatus
@@ -52,6 +53,8 @@ class VoiceAuthenticityResult(BaseModel):
     operation_id: Optional[str] = None
     cost_credits: float = 0.0
     latency_ms: Optional[float] = None
+    error_code: Optional[str] = None
+    http_status: Optional[int] = None
     raw_payload: Optional[dict[str, Any]] = None
 
 
@@ -61,6 +64,8 @@ class SpeakerIdentityResult(BaseModel):
     claimed_customer_id: str
     matched_customer_name: Optional[str] = None
     enrolled: bool = True
+    skip_reason: Optional[str] = None
+    similarity_tier: Optional[str] = None
     model_name: str = "DetectifAI Eidos"
     model_version: str = "eidos-v1"
     status: SignalStatus
@@ -71,6 +76,8 @@ class SpeakerIdentityResult(BaseModel):
     operation_id: Optional[str] = None
     cost_credits: float = 0.0
     latency_ms: Optional[float] = None
+    error_code: Optional[str] = None
+    http_status: Optional[int] = None
     raw_payload: Optional[dict[str, Any]] = None
 
 
@@ -84,8 +91,9 @@ class ManipulationMarker(BaseModel):
 
 
 class ManipulationAnalysisResult(BaseModel):
-    score: float = Field(default=0.0, ge=0, le=100)
-    safety_score: float = Field(default=100.0, ge=0, le=100)
+    score: Optional[float] = Field(default=0.0, ge=0, le=100)
+    safety_score: Optional[float] = Field(default=100.0, ge=0, le=100)
+    status: SignalStatus = "PASS"
     model_version: str = "aegis-manipulation-v1"
     latency_ms: Optional[float] = None
     category_counts: dict[str, int] = Field(
@@ -98,15 +106,16 @@ class ManipulationAnalysisResult(BaseModel):
 
 
 class ScamAnalysisResult(BaseModel):
-    risk_score: float = Field(..., ge=0, le=100)
-    safety_score: float = Field(..., ge=0, le=100)
-    behavioral_pressure_score: float = Field(..., ge=0, le=100)
+    risk_score: Optional[float] = Field(default=0.0, ge=0, le=100)
+    safety_score: Optional[float] = Field(default=100.0, ge=0, le=100)
+    behavioral_pressure_score: Optional[float] = Field(default=0.0, ge=0, le=100)
+    status: SignalStatus = "PASS"
     categories: list[str] = Field(default_factory=list)
     detected_patterns: list[str] = Field(default_factory=list)
     pressure_tactics: list[str] = Field(default_factory=list)
     flagged_phrases: list[FlaggedPhrase] = Field(default_factory=list)
     engine_used: str
-    model_version: str = "gemini-2.5-flash"
+    model_version: str = "llama-3.3-70b-versatile"
     latency_ms: Optional[float] = None
     provenance: AnalysisProvenance
     summary: str
@@ -157,6 +166,7 @@ class CompositeTrustBreakdown(BaseModel):
     final_decision: TrustVerdict = "INCOMPLETE ANALYSIS"
     band: FusionBand = "INCOMPLETE ANALYSIS"
     decision: CallDecision = "INCOMPLETE ANALYSIS"
+    decision_reason: Optional[str] = None
     liveness_override_applied: bool = False
     voice_clone_override_applied: bool = False
     conflict_overrides: list[str] = Field(default_factory=list)
@@ -244,12 +254,13 @@ class CallSession(BaseModel):
     synthetic_probability: Optional[float] = None
     voice_authenticity_score: Optional[float] = None
     speaker_match_percentage: Optional[float] = None
-    scam_risk_score: float = 0.0
-    behavioral_pressure_score: float = 0.0
+    scam_risk_score: Optional[float] = None
+    behavioral_pressure_score: Optional[float] = None
     trust_score: Optional[float] = None
     verdict: TrustVerdict = "INCOMPLETE ANALYSIS"
     band: FusionBand = "INCOMPLETE ANALYSIS"
     decision: CallDecision = "INCOMPLETE ANALYSIS"
+    decision_reason: Optional[str] = None
     model_status: dict[str, str] = Field(default_factory=dict)
     voice_authenticity: VoiceAuthenticityResult
     speaker_identity: SpeakerIdentityResult
@@ -273,12 +284,13 @@ class UnifiedCallAnalysisResponse(BaseModel):
     synthetic_probability: Optional[float] = None
     voice_authenticity: Optional[float] = None
     speaker_match_percentage: Optional[float] = None
-    scam_risk_score: float
-    behavioral_pressure_score: float
+    scam_risk_score: Optional[float] = None
+    behavioral_pressure_score: Optional[float] = None
     trust_score: Optional[float] = None
     verdict: TrustVerdict
     band: FusionBand = "INCOMPLETE ANALYSIS"
     decision: CallDecision = "INCOMPLETE ANALYSIS"
+    decision_reason: Optional[str] = None
     evidence: list[EvidenceEvent]
     timestamp: str
     model_status: dict[str, str]

@@ -32,7 +32,7 @@ export const FusionCard: React.FC<FusionCardProps> = ({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-3">
           <Layers className="w-5 h-5 text-[var(--brand-steel)] shrink-0" />
-          <h2 className="section-title">Trust Score Fusion</h2>
+          <h2 className="section-title">Heuristic Risk Index</h2>
           <span className="text-[26px] font-extrabold text-[var(--text-primary)]">
             {tb.composite_score !== null ? tb.composite_score.toFixed(1) : "Unavailable"}
           </span>

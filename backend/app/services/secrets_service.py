@@ -31,12 +31,14 @@ def load_persisted_secrets() -> None:
         if isinstance(data, dict):
             if data.get("detectif_api_key"):
                 settings.detectif_api_key = str(data["detectif_api_key"]).strip()
-            if data.get("gemini_api_key"):
-                settings.gemini_api_key = str(data["gemini_api_key"]).strip()
+            if data.get("groq_api_key"):
+                settings.groq_api_key = str(data["groq_api_key"]).strip()
             if data.get("detectif_api_base_url"):
                 settings.detectif_api_base_url = str(data["detectif_api_base_url"]).strip()
-            if data.get("gemini_model"):
-                settings.gemini_model = str(data["gemini_model"]).strip()
+            if data.get("groq_stt_model"):
+                settings.groq_stt_model = str(data["groq_stt_model"]).strip()
+            if data.get("groq_llm_model"):
+                settings.groq_llm_model = str(data["groq_llm_model"]).strip()
     except Exception:
         pass
 
@@ -44,20 +46,22 @@ def load_persisted_secrets() -> None:
 def get_secrets_status() -> SecretsStatusResponse:
     return SecretsStatusResponse(
         detectifai_configured=settings.detectifai_configured,
-        gemini_configured=settings.gemini_configured,
+        groq_configured=settings.groq_configured,
         detectif_key_hint=_mask_hint(settings.detectif_api_key),
-        gemini_key_hint=_mask_hint(settings.gemini_api_key),
+        groq_key_hint=_mask_hint(settings.groq_api_key),
         detectifai_base_url=settings.detectif_api_base_url,
-        gemini_model=settings.gemini_model,
+        groq_stt_model=settings.groq_stt_model,
+        groq_llm_model=settings.groq_llm_model,
     )
 
 
 def update_server_secrets(
     *,
     detectif_api_key: str | None = None,
-    gemini_api_key: str | None = None,
+    groq_api_key: str | None = None,
     detectif_api_base_url: str | None = None,
-    gemini_model: str | None = None,
+    groq_stt_model: str | None = None,
+    groq_llm_model: str | None = None,
 ) -> SecretsStatusResponse:
     """Persist API keys server-side only (0600 file permissions) and refresh live Settings."""
     with _LOCK:
@@ -74,18 +78,22 @@ def update_server_secrets(
             clean = detectif_api_key.strip()
             settings.detectif_api_key = clean
             existing["detectif_api_key"] = clean
-        if gemini_api_key is not None:
-            clean = gemini_api_key.strip()
-            settings.gemini_api_key = clean
-            existing["gemini_api_key"] = clean
+        if groq_api_key is not None:
+            clean = groq_api_key.strip()
+            settings.groq_api_key = clean
+            existing["groq_api_key"] = clean
         if detectif_api_base_url is not None and detectif_api_base_url.strip():
             clean_url = detectif_api_base_url.strip()
             settings.detectif_api_base_url = clean_url
             existing["detectif_api_base_url"] = clean_url
-        if gemini_model is not None and gemini_model.strip():
-            clean_model = gemini_model.strip()
-            settings.gemini_model = clean_model
-            existing["gemini_model"] = clean_model
+        if groq_stt_model is not None and groq_stt_model.strip():
+            clean_stt = groq_stt_model.strip()
+            settings.groq_stt_model = clean_stt
+            existing["groq_stt_model"] = clean_stt
+        if groq_llm_model is not None and groq_llm_model.strip():
+            clean_llm = groq_llm_model.strip()
+            settings.groq_llm_model = clean_llm
+            existing["groq_llm_model"] = clean_llm
 
         _SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = _SECRETS_PATH.with_suffix(".tmp")
@@ -99,7 +107,7 @@ def update_server_secrets(
 def clear_server_secrets() -> SecretsStatusResponse:
     with _LOCK:
         settings.detectif_api_key = ""
-        settings.gemini_api_key = ""
+        settings.groq_api_key = ""
         if _SECRETS_PATH.exists():
             _SECRETS_PATH.unlink()
     return get_secrets_status()

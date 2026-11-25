@@ -23,6 +23,7 @@ export function resampleFloat32(
   fromRate: number,
   toRate: number = TARGET_SAMPLE_RATE
 ): Float32Array {
+  // Kept only for synchronous helpers; live capture uses OfflineAudioContext anti-aliased resampling.
   if (fromRate === toRate || samples.length === 0) return samples;
   const ratio = fromRate / toRate;
   const outLength = Math.max(1, Math.round(samples.length / ratio));
@@ -36,6 +37,44 @@ export function resampleFloat32(
     result[i] = s0 + (s1 - s0) * frac;
   }
   return result;
+}
+
+export async function resampleWithOfflineAudioContext(
+  samples: Float32Array,
+  fromRate: number,
+  toRate: number = TARGET_SAMPLE_RATE
+): Promise<{ samples: Float32Array; sampleRate: number }> {
+  if (samples.length === 0) return { samples, sampleRate: toRate };
+  if (fromRate === toRate) return { samples, sampleRate: toRate };
+
+  const OfflineCtx =
+    window.OfflineAudioContext ||
+    (window as unknown as { webkitOfflineAudioContext?: typeof OfflineAudioContext })
+      .webkitOfflineAudioContext;
+
+  if (!OfflineCtx) {
+    // Preserve native sampleRate in WAV header rather than corrupting pitch/aliasing
+    return { samples, sampleRate: fromRate };
+  }
+
+  try {
+    const targetLength = Math.max(1, Math.ceil((samples.length * toRate) / fromRate));
+    const offline = new OfflineCtx(1, targetLength, toRate);
+    const buffer = offline.createBuffer(1, samples.length, fromRate);
+    buffer.copyToChannel(new Float32Array(samples), 0);
+    const source = offline.createBufferSource();
+    source.buffer = buffer;
+    source.connect(offline.destination);
+    source.start(0);
+    const rendered = await offline.startRendering();
+    return {
+      samples: new Float32Array(rendered.getChannelData(0)),
+      sampleRate: rendered.sampleRate,
+    };
+  } catch {
+    // Safe fallback: return original native sampleRate so WAV header matches PCM rate 1:1
+    return { samples, sampleRate: fromRate };
+  }
 }
 
 export function float32ToInt16(samples: Float32Array): Int16Array {
@@ -116,11 +155,24 @@ export async function transcodeBlobToWav16k(rawBlob: Blob): Promise<{
   try {
     const arr = await rawBlob.arrayBuffer();
     const decoded = await ctx.decodeAudioData(arr);
-    const mono = decoded.getChannelData(0);
-    const resampled = resampleFloat32(mono, decoded.sampleRate, TARGET_SAMPLE_RATE);
-    const quality = computeQualityMetrics(resampled, TARGET_SAMPLE_RATE);
+    // Downmix multi-channel inputs cleanly to mono before anti-aliased resampling
+    const length = decoded.length;
+    const channels = decoded.numberOfChannels;
+    const mono = new Float32Array(length);
+    for (let ch = 0; ch < channels; ch += 1) {
+      const chData = decoded.getChannelData(ch);
+      for (let i = 0; i < length; i += 1) {
+        mono[i] += chData[i] / channels;
+      }
+    }
+    const { samples: resampled, sampleRate: outRate } = await resampleWithOfflineAudioContext(
+      mono,
+      decoded.sampleRate,
+      TARGET_SAMPLE_RATE
+    );
+    const quality = computeQualityMetrics(resampled, outRate);
     const pcm16 = float32ToInt16(resampled);
-    const blob = encodePcm16MonoWav(pcm16, TARGET_SAMPLE_RATE);
+    const blob = encodePcm16MonoWav(pcm16, outRate);
     return { blob, quality, pcm16 };
   } finally {
     await ctx.close().catch(() => {});
@@ -178,6 +230,7 @@ export async function startAudioWorkletCapture(options: {
     window.AudioContext ||
     (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   const ctx = new AudioCtx();
+  await ctx.resume().catch(() => {});
   const source = ctx.createMediaStreamSource(stream);
 
   const rawFrames: Float32Array[] = [];
@@ -260,14 +313,18 @@ export async function startAudioWorkletCapture(options: {
         mergedRaw.set(f, pos);
         pos += f.length;
       }
-      const resampled = resampleFloat32(mergedRaw, sampleRateIn, TARGET_SAMPLE_RATE);
-      const quality = computeQualityMetrics(resampled, TARGET_SAMPLE_RATE);
+      const { samples: resampled, sampleRate: outRate } = await resampleWithOfflineAudioContext(
+        mergedRaw,
+        sampleRateIn,
+        TARGET_SAMPLE_RATE
+      );
+      const quality = computeQualityMetrics(resampled, outRate);
       const pcm16 = float32ToInt16(resampled);
       if (pendingFloat.length > 0 && options.onChunk) {
         const rem = float32ToInt16(new Float32Array(pendingFloat));
         options.onChunk(rem, 0, []);
       }
-      const blob = encodePcm16MonoWav(pcm16, TARGET_SAMPLE_RATE);
+      const blob = encodePcm16MonoWav(pcm16, outRate);
       const url = URL.createObjectURL(blob);
       return {
         blob,

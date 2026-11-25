@@ -42,6 +42,8 @@ export const AnalyzePage: React.FC = () => {
     runScenario,
     analyzeLiveAudio,
     executeCallAction,
+    retryLastAnalysis,
+    clearCurrentCall,
     applyUpdatedCall,
     resetError,
   } = useAnalysis();
@@ -66,6 +68,7 @@ export const AnalyzePage: React.FC = () => {
           voiceprints={voiceprints}
           isLoading={isLoading}
           onSelectScenario={runScenario}
+          onClearSession={clearCurrentCall}
           onAnalyzeAudio={analyzeLiveAudio}
         />
 
@@ -95,7 +98,7 @@ export const AnalyzePage: React.FC = () => {
               decision={currentCall.decision}
               band={currentCall.band}
               mode={currentCall.execution_mode}
-              recommendedAction={currentCall.trust_breakdown.recommended_action}
+              recommendedAction={currentCall.decision_reason || currentCall.trust_breakdown.recommended_action}
               livenessOverrideApplied={currentCall.trust_breakdown.liveness_override_applied}
               voiceCloneOverrideApplied={currentCall.trust_breakdown.voice_clone_override_applied}
               onPrimaryAction={handlePrimaryDecisionAction}
@@ -122,11 +125,16 @@ export const AnalyzePage: React.FC = () => {
           />
         ) : null}
 
-        <LayerCardsGrid call={currentCall} statuses={layerStatuses} isLoading={isLoading} />
+        <LayerCardsGrid
+          call={currentCall}
+          statuses={layerStatuses}
+          isLoading={isLoading}
+          onRetryEidos={() => void retryLastAnalysis()}
+        />
       </div>
 
       <aside className="w-full lg:w-[320px] shrink-0 space-y-3">
-        <CallerCard call={currentCall} voiceprints={voiceprints} />
+        <CallerCard call={currentCall} voiceprints={voiceprints} executionMode={executionMode} />
 
         <OperatorActionsCard
           decision={currentCall?.decision}
@@ -148,7 +156,10 @@ export const AnalyzePage: React.FC = () => {
           onResumeOperator={resumeBotAction}
         />
 
-        <AlertsTimelineCard events={currentCall?.evidence_timeline || []} />
+        <AlertsTimelineCard
+          events={currentCall?.evidence_timeline || []}
+          executionMode={executionMode}
+        />
       </aside>
 
       <TechnicalDetailsDrawer

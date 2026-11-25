@@ -16,7 +16,7 @@ export const PipelineStrip: React.FC<PipelineStripProps> = ({
   isLoading,
 }) => {
   const audioSt = isLoading ? "done" : call ? "done" : "queued";
-  const transcriptSt = isLoading ? "running" : call ? "done" : "queued";
+  const transcriptSt = layerStatuses.asr;
   const fusionSt = isLoading
     ? "queued"
     : !call

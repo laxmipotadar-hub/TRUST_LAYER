@@ -17,7 +17,11 @@ from app.schemas import (
     EvidenceEvent,
     LivenessCheckResult,
 )
-from app.services.aletheia_service import detect_deepfake_aletheia
+from app.services.aletheia_service import (
+    MIN_DURATION_SEC,
+    detect_deepfake_aletheia,
+    inspect_wav_duration_seconds,
+)
 from app.services.eidos_service import verify_speaker_eidos
 from app.services.trust_engine import build_evidence_timeline, compute_composite_trust
 
@@ -128,32 +132,83 @@ async def verify_challenge_response(
 
     # Check 4 & 5: Aletheia & Eidos checks on challenge audio when in REAL mode with audio
     aletheia_ok = True
+    aletheia_state = "not_run"  # not_run | real | fake | unavailable | too_short
     aletheia_detail = "No synthetic artifacts flagged in challenge channel."
     eidos_ok = True
+    eidos_state = "not_run"  # not_run | match | mismatch | unenrolled | unavailable
     eidos_detail = "Speaker identity consistent with claimed customer."
 
     if app_mode == "REAL" and audio_bytes:
-        ale = await detect_deepfake_aletheia(audio_bytes, filename=filename)
-        if ale.model_status in ("OK", "CACHED") and ale.result.score is not None:
-            aletheia_ok = ale.result.score >= 60.0
-            aletheia_detail = ale.result.detail
-        else:
+        detected_dur = inspect_wav_duration_seconds(audio_bytes)
+        if detected_dur is not None and detected_dur < MIN_DURATION_SEC:
             aletheia_ok = False
-            aletheia_detail = f"Aletheia check incomplete/unavailable ({ale.model_status})."
-
-        eid = await verify_speaker_eidos(audio_bytes, challenge.customer_id, filename=filename)
-        if eid.model_status in ("OK", "CACHED"):
-            eidos_ok = (eid.result.score or 0.0) >= 65.0
-            eidos_detail = eid.result.detail
-        elif eid.model_status == "UNENROLLED":
+            aletheia_state = "too_short"
+            aletheia_detail = (
+                f"Challenge audio duration ({detected_dur:.2f}s) is below DetectifAI Aletheia minimum {MIN_DURATION_SEC:.0f}.0s."
+            )
             eidos_ok = True
-            eidos_detail = "Customer unenrolled; Eidos neutral baseline applied."
+            eidos_state = "not_run"
+            eidos_detail = "Skipped Eidos because challenge audio was too short for Aletheia."
         else:
-            eidos_ok = False
-            eidos_detail = f"Eidos verification incomplete ({eid.model_status})."
+            ale = await detect_deepfake_aletheia(audio_bytes, filename=filename, bypass_cache=True)
+            if ale.model_status == "INVALID_AUDIO":
+                aletheia_ok = False
+                aletheia_state = "too_short"
+                aletheia_detail = ale.result.detail
+            elif ale.model_status not in ("OK", "CACHED") or ale.result.score is None:
+                aletheia_ok = False
+                aletheia_state = "unavailable"
+                aletheia_detail = ale.result.detail or f"Aletheia unavailable ({ale.model_status})."
+            elif ale.result.verdict == "fake" or ale.result.score < 60.0:
+                aletheia_ok = False
+                aletheia_state = "fake"
+                aletheia_detail = ale.result.detail
+            else:
+                aletheia_ok = True
+                aletheia_state = "real"
+                aletheia_detail = ale.result.detail
+
+            if aletheia_state == "real":
+                enrolled_vp = repo.get_voiceprint_by_customer(challenge.customer_id)
+                has_live_vp = (
+                    enrolled_vp is not None
+                    and enrolled_vp.status == "ACTIVE"
+                    and enrolled_vp.enrollment_source == "REAL ANALYSIS"
+                    and bool(enrolled_vp.provider_speaker_ref)
+                    and not str(enrolled_vp.provider_speaker_ref).startswith(("eidos-ref-", "sim-"))
+                )
+                if not has_live_vp:
+                    eidos_ok = True
+                    eidos_state = "unenrolled"
+                    eidos_detail = "No live-enrolled Voice ID on DetectifAI; Eidos skipped for challenge."
+                else:
+                    eid = await verify_speaker_eidos(
+                        audio_bytes, challenge.customer_id, filename=filename, bypass_cache=True
+                    )
+                    if eid.model_status in ("OK", "CACHED"):
+                        if (eid.result.score or 0.0) >= 65.0:
+                            eidos_ok = True
+                            eidos_state = "match"
+                        else:
+                            eidos_ok = False
+                            eidos_state = "mismatch"
+                        eidos_detail = eid.result.detail
+                    elif eid.model_status == "UNENROLLED":
+                        eidos_ok = True
+                        eidos_state = "unenrolled"
+                        eidos_detail = "Customer unenrolled; Eidos neutral baseline applied."
+                    else:
+                        eidos_ok = False
+                        eidos_state = "unavailable"
+                        eidos_detail = eid.result.detail or f"Eidos verification unavailable ({eid.model_status})."
     elif payload.capture_mode == "SIMULATED_REPLAY_FAIL":
+        aletheia_state = "real"
+        eidos_state = "match"
         aletheia_detail = "Aletheia saw human vocal origin (96%), masking replay risk."
         eidos_detail = "Eidos matched recorded customer timbre (94%), but failed dynamic nonce."
+    elif payload.capture_mode == "TIMEOUT":
+        aletheia_state = "real"
+        eidos_state = "match"
 
     checks = [
         ChallengeCheckItem(
@@ -197,8 +252,6 @@ async def verify_challenge_response(
     ]
 
     passed = all(c.passed for c in checks)
-    repo.update_challenge_status(challenge.challenge_id, "PASSED" if passed else "FAILED")
-
     provenance: AnalysisProvenance = (
         "SIMULATION"
         if is_simulated_mode or app_mode == "DEMO" or not audio_bytes
@@ -206,10 +259,57 @@ async def verify_challenge_response(
     )
 
     if passed:
+        outcome_status = "passed"
+        liveness_status_val = "PASS"
+        reason = "passed"
         notes = "All 5 Challenge Liveness checks passed within response window."
         explanation = "Live speaker repeated the unpredictable challenge phrase within human latency."
         banner_lines = ["CHALLENGE PASSED", "LIVE CALLER VERIFIED"]
-    else:
+        repo.update_challenge_status(challenge.challenge_id, "PASSED")
+    elif aletheia_state == "too_short":
+        outcome_status = "incomplete"
+        liveness_status_val = "INCOMPLETE"
+        reason = "audio_too_short"
+        notes = f"Challenge Incomplete (audio_too_short): {aletheia_detail}"
+        explanation = f"Challenge incomplete (audio_too_short): {aletheia_detail} Record 5-10 seconds and retry."
+        banner_lines = ["CHALLENGE INCOMPLETE", "REASON: audio_too_short", "RECORD 5-10s AUDIO"]
+        repo.update_challenge_status(challenge.challenge_id, "PENDING")
+    elif aletheia_state == "unavailable":
+        outcome_status = "incomplete"
+        liveness_status_val = "INCOMPLETE"
+        reason = "aletheia_unavailable"
+        notes = f"Challenge Incomplete (aletheia_unavailable): {aletheia_detail}"
+        explanation = f"Challenge incomplete (aletheia_unavailable): {aletheia_detail}"
+        banner_lines = ["CHALLENGE INCOMPLETE", "REASON: aletheia_unavailable"]
+        repo.update_challenge_status(challenge.challenge_id, "PENDING")
+    elif eidos_state == "unavailable":
+        outcome_status = "incomplete"
+        liveness_status_val = "INCOMPLETE"
+        reason = "eidos_unavailable"
+        notes = f"Challenge Incomplete (eidos_unavailable): {eidos_detail}"
+        explanation = f"Challenge incomplete (eidos_unavailable): {eidos_detail}"
+        banner_lines = ["CHALLENGE INCOMPLETE", "REASON: eidos_unavailable"]
+        repo.update_challenge_status(challenge.challenge_id, "PENDING")
+    elif aletheia_state == "fake":
+        outcome_status = "failed"
+        liveness_status_val = "FAIL"
+        reason = "synthetic"
+        notes = "Challenge Failed: Aletheia detected synthetic speech in the challenge audio."
+        explanation = f"Challenge failed (synthetic): {aletheia_detail}"
+        banner_lines = ["CHALLENGE FAILED", "SYNTHETIC SPEECH DETECTED", "CALL TRUST REVOKED"]
+        repo.update_challenge_status(challenge.challenge_id, "FAILED")
+    elif eidos_state == "mismatch":
+        outcome_status = "failed"
+        liveness_status_val = "FAIL"
+        reason = "speaker_mismatch"
+        notes = f"Challenge Failed (speaker_mismatch): {eidos_detail}"
+        explanation = f"Challenge failed (speaker_mismatch): {eidos_detail}"
+        banner_lines = ["CHALLENGE FAILED", "SPEAKER MISMATCH", "CALL TRUST REVOKED"]
+        repo.update_challenge_status(challenge.challenge_id, "FAILED")
+    elif (aletheia_state == "real" and eidos_state == "match") or payload.capture_mode in ("SIMULATED_REPLAY_FAIL", "TIMEOUT"):
+        outcome_status = "failed"
+        liveness_status_val = "FAIL"
+        reason = "expired" if (not within_window or payload.capture_mode == "TIMEOUT") else "phrase_mismatch"
         notes = "Challenge Liveness failed — potential replay attack or unverified response."
         explanation = (
             "The voice was authentic, and the identity matched. However, the caller failed the live "
@@ -220,6 +320,23 @@ async def verify_challenge_response(
             "POTENTIAL REPLAY ATTACK",
             "CALL TRUST REVOKED",
         ]
+        repo.update_challenge_status(challenge.challenge_id, "FAILED")
+    else:
+        outcome_status = "failed"
+        liveness_status_val = "FAIL"
+        reason = (
+            "text_input_not_live"
+            if payload.capture_mode == "TEXT_INPUT"
+            else ("expired" if not within_window else "phrase_mismatch")
+        )
+        notes = f"Challenge Failed ({reason})."
+        explanation = (
+            audio_detail
+            if payload.capture_mode == "TEXT_INPUT"
+            else f"Challenge failed ({reason}): Expected '{challenge.phrase}', heard '{payload.spoken_response or '(silence)'}'."
+        )
+        banner_lines = ["CHALLENGE FAILED", f"REASON: {reason.upper()}", "CALL TRUST REVOKED"]
+        repo.update_challenge_status(challenge.challenge_id, "FAILED")
 
     # Update associated CallSession trust breakdown if call_id is present
     updated_call: CallSession | None = None
@@ -228,9 +345,9 @@ async def verify_challenge_response(
         if existing_call:
             new_liveness = LivenessCheckResult(
                 passed=passed,
-                replay_detected=not passed,
-                score=96.0 if passed else 12.0,
-                status="PASS" if passed else "FAIL",
+                replay_detected=(outcome_status == "failed" and reason in ("phrase_mismatch", "expired")),
+                score=96.0 if passed else (None if outcome_status == "incomplete" else 12.0),
+                status="PASS" if passed else ("INCOMPLETE" if outcome_status == "incomplete" else "FAIL"),
                 signal_notes=notes,
                 provenance=provenance,
             )
@@ -247,13 +364,26 @@ async def verify_challenge_response(
                 new_liveness,
                 new_trust,
             )
+            event_title = (
+                "Challenge Liveness PASSED"
+                if passed
+                else (
+                    f"Challenge Incomplete · {reason}"
+                    if outcome_status == "incomplete"
+                    else (
+                        "CHALLENGE FAILED · POTENTIAL REPLAY ATTACK"
+                        if reason in ("phrase_mismatch", "expired")
+                        else f"CHALLENGE FAILED · {reason}"
+                    )
+                )
+            )
             new_timeline.append(
                 EvidenceEvent(
                     id=f"ev-chl-{uuid4().hex[:5]}",
                     timestamp_sec=13.5,
                     category="LIVENESS",
-                    severity="INFO" if passed else "CRITICAL",
-                    title="Challenge Liveness PASSED" if passed else "CHALLENGE FAILED · POTENTIAL REPLAY ATTACK",
+                    severity="INFO" if passed else ("WARNING" if outcome_status == "incomplete" else "CRITICAL"),
+                    title=event_title,
                     description=explanation,
                     provenance=provenance,
                 )
@@ -265,6 +395,9 @@ async def verify_challenge_response(
                     "trust_breakdown": new_trust,
                     "trust_score": new_trust.composite_score,
                     "verdict": new_trust.final_decision,
+                    "band": new_trust.band,
+                    "decision": new_trust.decision,
+                    "decision_reason": new_trust.decision_reason,
                     "evidence_timeline": new_timeline,
                 }
             )
@@ -273,8 +406,10 @@ async def verify_challenge_response(
     return ChallengeVerifyResponse(
         challenge_id=challenge.challenge_id,
         passed=passed,
+        status=outcome_status,
+        reason=reason,
         phrase_similarity=round(overlap, 2),
-        liveness_status="PASS" if passed else "FAIL",
+        liveness_status=liveness_status_val,
         capture_mode=payload.capture_mode,
         notes=notes,
         explanation=explanation,

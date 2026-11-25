@@ -35,6 +35,8 @@ export interface ChallengeModalProps {
   onComplete: (resp: ChallengeVerifyResponse, updatedCall?: CallSession | null) => void;
 }
 
+const MIN_CHALLENGE_SEC = 4.5;
+
 export const ChallengeModal: React.FC<ChallengeModalProps> = ({
   isOpen,
   callId,
@@ -44,7 +46,7 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
   onComplete,
 }) => {
   const [challengeData, setChallengeData] = useState<ChallengeSession | null>(null);
-  const [timeLeft, setTimeLeft] = useState<number>(15);
+  const [timeLeft, setTimeLeft] = useState<number>(20);
   const [spokenTranscript, setSpokenTranscript] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -72,7 +74,7 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
       .startChallenge(callId, customerId)
       .then((res) => {
         setChallengeData(res);
-        setTimeLeft(res.window_seconds || 15);
+        setTimeLeft(res.window_seconds || 20);
         startedAtRef.current = Date.now();
       })
       .catch((err) => {
@@ -170,6 +172,9 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
           <p className="text-[28px] font-extrabold text-[var(--brand-navy)] tracking-tight">
             {challengeData?.phrase || "Loading phrase..."}
           </p>
+          <p className="text-[13px] text-[var(--text-muted)]">
+            Speak naturally for 5–10 seconds (minimum {MIN_CHALLENGE_SEC.toFixed(1)}s required for Aletheia deepfake check).
+          </p>
         </div>
 
         <div className="flex items-center justify-between text-[14px] px-1">
@@ -190,16 +195,18 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
               onClick={handleStartMic}
               icon={<Mic className="w-4 h-4" />}
             >
-              Start Microphone Reply
+              Start Microphone Reply (5–10s)
             </Button>
           ) : (
             <Button
               variant="danger"
-              disabled={isVerifying}
+              disabled={isVerifying || recorder.elapsedSeconds < MIN_CHALLENGE_SEC}
               onClick={handleStopAndVerify}
               icon={<StopCircle className="w-4 h-4" />}
             >
-              Stop & Verify Audio ({recorder.level}%)
+              {recorder.elapsedSeconds < MIN_CHALLENGE_SEC
+                ? `Keep speaking… ${(MIN_CHALLENGE_SEC - recorder.elapsedSeconds).toFixed(1)}s left (${recorder.level}%)`
+                : `Stop & Verify Audio (${recorder.elapsedSeconds.toFixed(1)}s · ${recorder.level}%)`}
             </Button>
           )}
         </div>
@@ -238,16 +245,23 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
               className={`p-3 rounded-lg border flex items-start gap-2.5 text-[14px] ${
                 verifyOutcome.passed
                   ? "bg-[var(--decision-continue-tint)] border-[var(--decision-continue-border)] text-[var(--decision-continue-text)]"
+                  : verifyOutcome.status === "incomplete" || verifyOutcome.liveness_status === "INCOMPLETE"
+                  ? "bg-[var(--decision-stepup-tint)] border-[var(--decision-stepup-border)] text-[var(--decision-stepup-text)]"
                   : "bg-[var(--decision-endcall-tint)] border-[var(--decision-endcall-border)] text-[var(--decision-endcall-text)]"
               }`}
             >
               {verifyOutcome.passed ? (
                 <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" />
+              ) : verifyOutcome.status === "incomplete" || verifyOutcome.liveness_status === "INCOMPLETE" ? (
+                <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
               ) : (
                 <XCircle className="w-5 h-5 shrink-0 mt-0.5" />
               )}
               <div>
-                <p className="font-bold">{verifyOutcome.liveness_status}</p>
+                <p className="font-bold">
+                  {verifyOutcome.liveness_status}
+                  {verifyOutcome.reason ? ` (${verifyOutcome.reason})` : ""}
+                </p>
                 <p>{verifyOutcome.explanation}</p>
               </div>
             </div>

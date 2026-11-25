@@ -15,6 +15,7 @@ export interface ClipBarProps {
   voiceprints: VoiceprintRecord[];
   isLoading: boolean;
   onSelectScenario: (id: "S1" | "S2" | "S3" | "S4") => void;
+  onClearSession?: () => void;
   onAnalyzeAudio: (params: {
     file?: Blob;
     filename?: string;
@@ -25,12 +26,15 @@ export interface ClipBarProps {
   }) => void;
 }
 
+const MIN_ALETHEIA_SECONDS = 4.1;
+
 export const ClipBar: React.FC<ClipBarProps> = ({
   executionMode,
   activeScenarioId,
   voiceprints,
   isLoading,
   onSelectScenario,
+  onClearSession,
   onAnalyzeAudio,
 }) => {
   const isLive = executionMode === "LIVE";
@@ -40,26 +44,59 @@ export const ClipBar: React.FC<ClipBarProps> = ({
   );
   const [transcriptText, setTranscriptText] = useState("");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadedMeta, setUploadedMeta] = useState<{
+    url: string;
+    duration: number;
+    sampleRate: number;
+  } | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [recordedAudio, setRecordedAudio] = useState<{
     blob: Blob;
+    url: string;
     duration: number;
+    sampleRate: number;
     silenceRatio: number;
   } | null>(null);
   const [audioErr, setAudioErr] = useState<string | null>(null);
   const [helper] = useState(() => new AudioCaptureHelper());
 
+  const clearPreviousClip = () => {
+    if (recordedAudio?.url) URL.revokeObjectURL(recordedAudio.url);
+    if (uploadedMeta?.url) URL.revokeObjectURL(uploadedMeta.url);
+    setRecordedAudio(null);
+    setUploadedFile(null);
+    setUploadedMeta(null);
+    setAudioErr(null);
+    onClearSession?.();
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
-    setAudioErr(null);
-    setRecordedAudio(null);
+    clearPreviousClip();
     try {
       const converted = await transcodeBlobToWav16k(file);
-      setUploadedFile(new File([converted.blob], file.name.replace(/\.[^.]+$/, ".wav"), { type: "audio/wav" }));
+      const wavFile = new File([converted.blob], file.name.replace(/\.[^.]+$/, ".wav"), {
+        type: "audio/wav",
+      });
+      const previewUrl = URL.createObjectURL(wavFile);
+      setUploadedFile(wavFile);
+      setUploadedMeta({
+        url: previewUrl,
+        duration: converted.quality.durationSeconds,
+        sampleRate: converted.quality.sampleRate,
+      });
+      if (converted.quality.durationSeconds <= 4.0) {
+        setAudioErr(
+          `Clip duration is ${converted.quality.durationSeconds.toFixed(1)}s — Aletheia requires > 4.0 seconds.`
+        );
+      }
     } catch {
+      const previewUrl = URL.createObjectURL(file);
       setUploadedFile(file);
+      setUploadedMeta({ url: previewUrl, duration: 5.0, sampleRate: 16000 });
     }
   };
 
@@ -72,19 +109,25 @@ export const ClipBar: React.FC<ClipBarProps> = ({
         setMicLevel(0);
         setRecordedAudio({
           blob: res.blob,
+          url: res.url,
           duration: res.durationSeconds,
+          sampleRate: res.quality.sampleRate,
           silenceRatio: res.quality.silenceRatio,
         });
-        setUploadedFile(null);
+        if (res.durationSeconds <= 4.0) {
+          setAudioErr(
+            `Recorded clip is only ${res.durationSeconds.toFixed(1)}s — record more than 4.0 seconds for Aletheia deepfake detection.`
+          );
+        }
       } catch (err) {
         setIsRecording(false);
         setAudioErr(err instanceof Error ? err.message : "Failed to finish audio capture.");
       }
     } else {
+      clearPreviousClip();
       try {
         await helper.start((lvl) => setMicLevel(lvl));
         setIsRecording(true);
-        setRecordedAudio(null);
       } catch (err) {
         setIsRecording(false);
         setAudioErr(err instanceof Error ? err.message : "Microphone permission denied.");
@@ -92,9 +135,15 @@ export const ClipBar: React.FC<ClipBarProps> = ({
     }
   };
 
+  const activeDuration = uploadedMeta?.duration ?? recordedAudio?.duration ?? null;
+  const activePreviewUrl = uploadedMeta?.url ?? recordedAudio?.url ?? null;
+  const activeSampleRate = uploadedMeta?.sampleRate ?? recordedAudio?.sampleRate ?? null;
+  const clipTooShort = activeDuration !== null && activeDuration <= 4.0;
+  const hasClip = Boolean(uploadedFile || recordedAudio);
+
   const handleAnalyzeCustom = () => {
     const audio = uploadedFile || recordedAudio?.blob;
-    if ((!audio && !transcriptText.trim()) || isLoading) return;
+    if ((!audio && !transcriptText.trim()) || isLoading || clipTooShort) return;
     const selectedVp = voiceprints.find((v) => v.customer_id === selectedCustomerId);
     onAnalyzeAudio({
       file: audio || undefined,
@@ -102,7 +151,7 @@ export const ClipBar: React.FC<ClipBarProps> = ({
       transcript_text: transcriptText,
       claimed_customer_id: selectedCustomerId,
       caller_label: selectedVp ? `${selectedVp.customer_name} (${selectedCustomerId})` : selectedCustomerId,
-      duration_hint_sec: recordedAudio?.duration,
+      duration_hint_sec: activeDuration ?? undefined,
     });
   };
 
@@ -231,14 +280,38 @@ export const ClipBar: React.FC<ClipBarProps> = ({
                 variant="primary"
                 size="sm"
                 loading={isLoading}
-                disabled={(!uploadedFile && !recordedAudio && !transcriptText.trim()) || isRecording}
+                disabled={(!hasClip && !transcriptText.trim()) || isRecording || clipTooShort}
                 onClick={handleAnalyzeCustom}
                 className="w-full"
               >
-                {isLive ? "Analyze LIVE (Fresh)" : copy.clipSelector.runAnalysisButton}
+                {clipTooShort
+                  ? `Clip < ${MIN_ALETHEIA_SECONDS.toFixed(0)}s`
+                  : isLive
+                  ? "Analyze LIVE (Fresh)"
+                  : copy.clipSelector.runAnalysisButton}
               </Button>
             </div>
           </div>
+
+          {activePreviewUrl && (
+            <div className="p-3 rounded-lg border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[14px]">
+                <span className="font-semibold text-[var(--text-primary)] inline-flex items-center gap-1.5">
+                  <FileAudio className="w-4 h-4 text-[var(--brand-steel)]" />
+                  Audio Preview ({activeDuration !== null ? `${activeDuration.toFixed(1)}s` : "—"}
+                  {activeSampleRate ? ` · ${activeSampleRate} Hz PCM WAV` : ""})
+                </span>
+                <button
+                  type="button"
+                  onClick={clearPreviousClip}
+                  className="text-[14px] font-medium text-[var(--brand-steel)] hover:underline cursor-pointer"
+                >
+                  Clear clip
+                </button>
+              </div>
+              <audio controls src={activePreviewUrl} className="w-full h-9" />
+            </div>
+          )}
 
           <div>
             <label

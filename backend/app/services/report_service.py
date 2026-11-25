@@ -50,7 +50,7 @@ def build_report_recommendations(call: CallSession) -> list[str]:
             )
         if call.voice_authenticity.score is not None and call.voice_authenticity.score < 40:
             recs.append("Synthetic voice artifacts detected; block automated fulfillment immediately.")
-        if call.scam_analysis.risk_score >= 40:
+        if call.scam_analysis.risk_score is not None and call.scam_analysis.risk_score >= 40:
             recs.append("Do not authorize payment, wire transfer, or OTP/credential changes.")
         recs.append("Request human intervention and pause automated voice response.")
         recs.append("Block suspicious caller and escalate forensic brief to the fraud investigation team.")

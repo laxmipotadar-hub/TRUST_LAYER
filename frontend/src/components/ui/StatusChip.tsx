@@ -2,7 +2,7 @@ import React from "react";
 import { CheckCircle2, MinusCircle, Clock, Loader2, XCircle } from "lucide-react";
 import { copy } from "../../copy";
 
-export type StatusChipType = "done" | "skipped" | "pending" | "queued" | "running" | "error";
+export type StatusChipType = "done" | "skipped" | "pending" | "queued" | "running" | "error" | "unavailable";
 
 export interface StatusChipProps {
   status: StatusChipType;
@@ -25,6 +25,12 @@ export const StatusChip: React.FC<StatusChipProps> = ({
     skipped: {
       icon: <MinusCircle className="w-4 h-4 text-[var(--text-muted)] shrink-0" />,
       text: label || copy.statusChip.skipped,
+      style:
+        "bg-[var(--fill-subtle)] text-[var(--text-secondary)] border border-[var(--border)]",
+    },
+    unavailable: {
+      icon: <MinusCircle className="w-4 h-4 text-[var(--text-muted)] shrink-0" />,
+      text: label || "Unavailable",
       style:
         "bg-[var(--fill-subtle)] text-[var(--text-secondary)] border border-[var(--border)]",
     },

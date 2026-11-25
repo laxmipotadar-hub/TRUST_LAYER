@@ -53,8 +53,10 @@ class ChallengeCheckItem(BaseModel):
 class ChallengeVerifyResponse(BaseModel):
     challenge_id: str
     passed: bool
+    status: Literal["passed", "failed", "incomplete"] = "failed"
+    reason: Optional[str] = None
     phrase_similarity: float = Field(..., ge=0, le=1)
-    liveness_status: Literal["PASS", "FAIL"]
+    liveness_status: Literal["PASS", "FAIL", "INCOMPLETE"]
     capture_mode: ChallengeCaptureMode
     notes: str
     explanation: str

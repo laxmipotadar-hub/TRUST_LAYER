@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -27,13 +28,23 @@ from app.schemas import (
 )
 from app.services.aletheia_service import detect_deepfake_aletheia
 from app.services.cache_service import cache_service
-from app.services.eidos_service import NEUTRAL_UNENROLLED_SCORE, verify_speaker_eidos
+from app.services.content_analysis_service import analyze_call_content
+from app.services.eidos_service import (
+    EIDOS_VERIFY_COST_CREDITS,
+    NEUTRAL_UNENROLLED_SCORE,
+    verify_speaker_eidos,
+)
 from app.services.ledger_service import record_operation
 from app.services.scam_analysis_service import analyze_scam_transcript, extract_manipulation_analysis
 from app.services.trust_engine import build_evidence_timeline, compute_composite_trust
 
 
-def _resolve_overall_provenance(provenances: list[AnalysisProvenance]) -> AnalysisProvenance:
+def _resolve_overall_provenance(
+    provenances: list[AnalysisProvenance],
+    execution_mode: ExecutionMode | None = None,
+) -> AnalysisProvenance:
+    if execution_mode == "LIVE":
+        return "REAL ANALYSIS"
     if all(p == "REAL ANALYSIS" for p in provenances):
         return "REAL ANALYSIS"
     if all(p == "CACHED ANALYSIS" for p in provenances):
@@ -78,7 +89,8 @@ def _build_session_and_unified(
     )
     timeline = build_evidence_timeline(voice, identity, scam, liveness, trust)
     overall_prov = _resolve_overall_provenance(
-        [voice.provenance, identity.provenance, scam.provenance, liveness.provenance]
+        [voice.provenance, identity.provenance, scam.provenance, liveness.provenance],
+        execution_mode=execution_mode,
     )
 
     masked_suffix = claimed_customer_id[-4:] if len(claimed_customer_id) >= 4 else claimed_customer_id
@@ -116,6 +128,7 @@ def _build_session_and_unified(
         verdict=trust.verdict,
         band=trust.band,
         decision=trust.decision,
+        decision_reason=trust.decision_reason,
         model_status=model_status,
         voice_authenticity=voice,
         speaker_identity=identity,
@@ -144,6 +157,7 @@ def _build_session_and_unified(
         verdict=trust.verdict,
         band=trust.band,
         decision=trust.decision,
+        decision_reason=trust.decision_reason,
         evidence=timeline,
         timestamp=timestamp,
         model_status=model_status,
@@ -261,16 +275,33 @@ async def analyze_call_unified(
 
     live_segments: list[SegmentRiskChunk] = []
     credits_saved = 0.0
+    effective_transcript = transcript_text.strip()
 
     if mode == "REAL":
-        if audio_bytes:
-            aletheia_eval = await detect_deepfake_aletheia(
+        async def _no_audio_aletheia():
+            return None
+
+        ale_coro = (
+            detect_deepfake_aletheia(
                 audio_bytes,
                 filename=filename,
                 duration_hint_sec=duration_hint_sec,
                 bypass_cache=bypass_cache,
                 call_id=call_id,
             )
+            if audio_bytes
+            else _no_audio_aletheia()
+        )
+        content_coro = analyze_call_content(
+            audio_bytes=audio_bytes,
+            transcript_text=transcript_text,
+            analysis_mode="REAL",
+            bypass_cache=bypass_cache,
+            call_id=call_id,
+        )
+        aletheia_eval, content_eval = await asyncio.gather(ale_coro, content_coro)
+
+        if aletheia_eval is not None:
             voice = aletheia_eval.result
             aletheia_status = aletheia_eval.model_status
             live_segments = aletheia_eval.segments
@@ -285,15 +316,58 @@ async def analyze_call_unified(
             )
             aletheia_status = "UNAVAILABLE"
 
-        eidos_eval = await verify_speaker_eidos(
-            audio_bytes,
-            claimed_customer_id,
-            filename=filename,
-            bypass_cache=bypass_cache,
-            call_id=call_id,
-        )
-        identity = eidos_eval.result
-        eidos_status = eidos_eval.model_status
+        aletheia_is_fake = aletheia_status in ("OK", "CACHED") and voice.verdict == "fake"
+        enrolled_vp = repo.get_voiceprint_by_customer(claimed_customer_id)
+
+        if aletheia_is_fake:
+            # Gate: short-circuit Eidos immediately when Aletheia flags synthetic speech
+            identity = SpeakerIdentityResult(
+                score=None,
+                match_confidence=None,
+                claimed_customer_id=claimed_customer_id,
+                matched_customer_name=None,
+                enrolled=enrolled_vp is not None,
+                skip_reason="aletheia_fake",
+                status="skipped",
+                provenance=voice.provenance,
+                detail="Skipped — Eidos not needed, 1 call saved (Aletheia detected possible synthetic speech).",
+                cost_credits=0.0,
+            )
+            eidos_status = "SKIPPED"
+            credits_saved += EIDOS_VERIFY_COST_CREDITS
+        else:
+            has_live_voice_id = (
+                enrolled_vp is not None
+                and enrolled_vp.status == "ACTIVE"
+                and enrolled_vp.enrollment_source == "REAL ANALYSIS"
+                and bool(enrolled_vp.provider_speaker_ref)
+                and not str(enrolled_vp.provider_speaker_ref).startswith(("eidos-ref-", "sim-"))
+            )
+            if execution_mode == "LIVE" and not has_live_voice_id:
+                identity = SpeakerIdentityResult(
+                    score=None,
+                    match_confidence=None,
+                    claimed_customer_id=claimed_customer_id,
+                    matched_customer_name=None,
+                    enrolled=False,
+                    skip_reason="no_voice_id",
+                    similarity_tier="unavailable",
+                    status="skipped",
+                    provenance="REAL ANALYSIS",
+                    detail="Skipped — No live Voice ID enrolled for claimed customer.",
+                    cost_credits=0.0,
+                )
+                eidos_status = "SKIPPED"
+            else:
+                eidos_eval = await verify_speaker_eidos(
+                    audio_bytes,
+                    claimed_customer_id,
+                    filename=filename,
+                    bypass_cache=bypass_cache,
+                    call_id=call_id,
+                )
+                identity = eidos_eval.result
+                eidos_status = eidos_eval.model_status
 
         if aletheia_status in ("OK", "CACHED") and voice.score is not None:
             liveness = LivenessCheckResult(
@@ -316,22 +390,23 @@ async def analyze_call_unified(
             )
             liveness_status = "UNAVAILABLE"
 
-        scam = await analyze_scam_transcript(
-            transcript_text,
-            analysis_mode="REAL",
-            bypass_cache=bypass_cache,
-            call_id=call_id,
-        )
+        scam = content_eval.scam
+        effective_transcript = content_eval.transcript
         scam_status = (
-            "FALLBACK"
-            if scam.fallback_used
-            else ("CACHED" if scam.cache_hit else "OK")
+            "UNAVAILABLE"
+            if scam.status == "UNAVAILABLE"
+            else (
+                "FALLBACK"
+                if scam.fallback_used
+                else ("CACHED" if scam.cache_hit else "OK")
+            )
         )
         model_status = {
             "aletheia": aletheia_status,
             "eidos": eidos_status,
+            "asr": content_eval.asr_status,
             "scam_analysis": scam_status,
-            "manipulation": "OK",
+            "manipulation": "UNAVAILABLE" if content_eval.manipulation.status == "UNAVAILABLE" else "OK",
             "liveness": liveness_status,
         }
     elif mode == "CACHED":
@@ -456,21 +531,33 @@ async def analyze_call_unified(
             "liveness": "SIMULATION",
         }
 
-    risk_level = "HIGH" if scam.risk_score >= 60 else ("MEDIUM" if scam.risk_score >= 25 else "LOW")
-    transcript_segments = [
-        TranscriptSegment(
-            id="seg-1",
-            timestamp_sec=1.0,
-            speaker="CALLER",
-            text=transcript_text.strip() or f"[Audio sample: {filename}]",
-            risk_level=risk_level,
-            triggers=[fp.phrase for fp in scam.flagged_phrases],
+    risk_level = (
+        "LOW"
+        if scam.risk_score is None
+        else ("HIGH" if scam.risk_score >= 60 else ("MEDIUM" if scam.risk_score >= 25 else "LOW"))
+    )
+    transcript_segments = (
+        [
+            TranscriptSegment(
+                id="seg-1",
+                timestamp_sec=1.0,
+                speaker="CALLER",
+                text=effective_transcript,
+                risk_level=risk_level,
+                triggers=[fp.phrase for fp in scam.flagged_phrases],
+            )
+        ]
+        if effective_transcript
+        else []
+    )
+    manipulation = (
+        content_eval.manipulation
+        if mode == "REAL"
+        else extract_manipulation_analysis(
+            effective_transcript,
+            transcript_segments=transcript_segments if effective_transcript else None,
+            provenance="REAL ANALYSIS" if effective_exec_mode == "LIVE" else scam.provenance,
         )
-    ]
-    manipulation = extract_manipulation_analysis(
-        transcript_text,
-        transcript_segments=transcript_segments,
-        provenance=scam.provenance,
     )
     if effective_exec_mode == "CACHED":
         credits_saved = 524.0 if aletheia_status == "CACHED" else 0.0
@@ -500,6 +587,6 @@ async def analyze_call_unified(
         ),
         model_status=model_status,
         segment_chunks=live_segments,
-        previous_score=previous_score,
+        previous_score=None,
         credits_saved=credits_saved,
     )
