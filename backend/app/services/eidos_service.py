@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
+from urllib.parse import quote
 from uuid import uuid4
 import httpx
 
@@ -8,6 +10,7 @@ from app.core.config import settings
 from app.repositories.json_store import repo
 from app.schemas import SpeakerIdentityResult
 from app.services.cache_service import cache_service
+from app.services.ledger_service import record_operation
 
 
 NEUTRAL_UNENROLLED_SCORE = 50.0
@@ -50,10 +53,12 @@ async def enroll_speaker_eidos(
     }
     files = {"file": (filename, audio_bytes, "audio/wav")}
     data = {"speaker_id": speaker_id}
+    t0 = time.perf_counter()
 
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.post(url, headers=headers, files=files, data=data)
+            latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
             if resp.status_code in (401, 403):
                 return EidosEnrollOutcome(
                     success=False,
@@ -61,6 +66,14 @@ async def enroll_speaker_eidos(
                     provider_operation_id=None,
                     status="AUTH_ERROR",
                     detail=f"Eidos authentication failed (HTTP {resp.status_code}).",
+                )
+            if resp.status_code == 402:
+                return EidosEnrollOutcome(
+                    success=False,
+                    provider_speaker_ref=None,
+                    provider_operation_id=None,
+                    status="INSUFFICIENT_CREDITS",
+                    detail="DetectifAI credit balance exhausted (HTTP 402).",
                 )
             if resp.status_code == 429:
                 return EidosEnrollOutcome(
@@ -99,19 +112,49 @@ async def enroll_speaker_eidos(
             detail="Eidos enrollment returned unexpected response structure.",
         )
 
+    op_id = body.get("operation_id") or body.get("request_id") or f"op_enr_{uuid4().hex[:8]}"
+    record_operation(
+        operation_id=op_id,
+        call_id=f"ENROLL-{speaker_id}",
+        service="enroll",
+        endpoint="/v1/speakers/enroll",
+        mode="FRESH",
+        status="done",
+        cost_credits=float(body.get("credits_used") or body.get("cost_credits") or 200.0),
+        latency_ms=latency_ms,
+        cached=False,
+    )
     return EidosEnrollOutcome(
         success=True,
         provider_speaker_ref=str(res.get("speaker_id", speaker_id)),
-        provider_operation_id=body.get("operation_id"),
+        provider_operation_id=op_id,
         status="OK",
         detail="Speaker voiceprint enrolled with DetectifAI Eidos.",
     )
+
+
+async def delete_speaker_eidos(speaker_id: str) -> tuple[bool, str]:
+    """Delete speaker profile from DetectifAI Eidos via DELETE /v1/speakers/{speaker_id}."""
+    if not settings.detectifai_configured or speaker_id.startswith("sim-") or speaker_id.startswith("eidos-ref-"):
+        return True, "Local/simulation speaker profile revoked."
+    url = f"{settings.detectif_api_base_url.rstrip('/')}/v1/speakers/{quote(speaker_id, safe='')}"
+    headers = {"Authorization": f"Bearer {settings.detectif_api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.delete(url, headers=headers)
+            if resp.status_code in (200, 204, 404):
+                return True, f"Eidos speaker '{speaker_id}' removed (HTTP {resp.status_code})."
+            return False, f"Eidos delete failed (HTTP {resp.status_code})."
+    except Exception as exc:
+        return False, f"Eidos delete network error: {exc.__class__.__name__}"
 
 
 async def verify_speaker_eidos(
     audio_bytes: bytes | None,
     claimed_customer_id: str,
     filename: str = "verify.wav",
+    bypass_cache: bool = False,
+    call_id: str | None = None,
 ) -> EidosVerifyEvaluation:
     """Isolated DetectifAI Eidos verification via POST /v1/speakers/verify."""
     enrolled_vp = repo.get_voiceprint_by_customer(claimed_customer_id)
@@ -169,12 +212,23 @@ async def verify_speaker_eidos(
         params={"speaker_id": speaker_ref},
         audio_bytes=audio_bytes,
     )
-    cached = cache_service.get(cache_key)
-    if cached and isinstance(cached.get("payload"), dict):
-        return EidosVerifyEvaluation(
-            result=SpeakerIdentityResult(**{**cached["payload"], "cache_hit": True}),
-            model_status="CACHED",
-        )
+    if not bypass_cache:
+        cached = cache_service.get(cache_key)
+        if cached and isinstance(cached.get("payload"), dict):
+            res_obj = SpeakerIdentityResult(**{**cached["payload"], "cache_hit": True, "cost_credits": 0.0})
+            if call_id:
+                record_operation(
+                    operation_id=res_obj.operation_id or res_obj.request_id or f"cache_{uuid4().hex[:8]}",
+                    call_id=call_id,
+                    service="eidos",
+                    endpoint="/v1/speakers/verify",
+                    mode="CACHED",
+                    status="done",
+                    cost_credits=0.0,
+                    latency_ms=0.0,
+                    cached=True,
+                )
+            return EidosVerifyEvaluation(result=res_obj, model_status="CACHED")
 
     url = f"{settings.detectif_api_base_url.rstrip('/')}/v1/speakers/verify"
     headers = {
@@ -183,10 +237,12 @@ async def verify_speaker_eidos(
     }
     files = {"file": (filename, audio_bytes, "audio/wav")}
     form = {"speaker_id": speaker_ref}
+    t0 = time.perf_counter()
 
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.post(url, headers=headers, files=files, data=form)
+            latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
             if resp.status_code == 404:
                 return EidosVerifyEvaluation(
                     result=SpeakerIdentityResult(
@@ -283,6 +339,8 @@ async def verify_speaker_eidos(
     decision = str(res["decision"]).lower()
     match_pct = round(max(0.0, min(1.0, similarity)) * 100.0, 1)
     status = "PASS" if decision == "match" else "FAIL"
+    op_id = body.get("operation_id") or body.get("request_id")
+    credits_used = float(body.get("credits_used") or body.get("cost_credits") or 500.0)
 
     normalized = SpeakerIdentityResult(
         score=match_pct,
@@ -298,7 +356,24 @@ async def verify_speaker_eidos(
         ),
         cache_hit=False,
         request_id=body.get("request_id"),
+        operation_id=op_id,
+        cost_credits=credits_used,
+        latency_ms=latency_ms,
+        raw_payload=body,
     )
-    cache_service.set(cache_key, "eidos_verify", normalized.model_dump())
+    if not bypass_cache:
+        cache_service.set(cache_key, "eidos_verify", normalized.model_dump())
+    if call_id:
+        record_operation(
+            operation_id=op_id or f"op_eid_{uuid4().hex[:8]}",
+            call_id=call_id,
+            service="eidos",
+            endpoint="/v1/speakers/verify",
+            mode="FRESH",
+            status="done",
+            cost_credits=credits_used,
+            latency_ms=latency_ms,
+            cached=False,
+        )
 
     return EidosVerifyEvaluation(result=normalized, model_status="OK")

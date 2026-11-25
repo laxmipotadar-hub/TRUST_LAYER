@@ -13,7 +13,7 @@ from app.schemas import (
     VoiceprintVerificationEntry,
     VoiceprintVerifyResponse,
 )
-from app.services.eidos_service import enroll_speaker_eidos, verify_speaker_eidos
+from app.services.eidos_service import delete_speaker_eidos, enroll_speaker_eidos, verify_speaker_eidos
 
 
 router = APIRouter(prefix="/voiceprints", tags=["voiceprints"])
@@ -207,7 +207,15 @@ async def verify_voiceprint_audio(
 
 
 @router.post("/{voiceprint_id}/revoke", response_model=VoiceprintRecord)
-def revoke_voiceprint(voiceprint_id: str) -> VoiceprintRecord:
+async def revoke_voiceprint(voiceprint_id: str) -> VoiceprintRecord:
+    existing = next((v for v in repo.list_voiceprints() if v.voiceprint_id == voiceprint_id), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Voiceprint '{voiceprint_id}' not found.")
+    state = repo.get_settings_state()
+    if state["app_mode"] == "REAL" and existing.provider_speaker_ref:
+        ok, msg = await delete_speaker_eidos(existing.provider_speaker_ref)
+        if not ok:
+            raise HTTPException(status_code=502, detail=msg)
     revoked = repo.revoke_voiceprint(voiceprint_id, datetime.now(timezone.utc).isoformat())
     if not revoked:
         raise HTTPException(status_code=404, detail=f"Voiceprint '{voiceprint_id}' not found.")
@@ -215,7 +223,15 @@ def revoke_voiceprint(voiceprint_id: str) -> VoiceprintRecord:
 
 
 @router.delete("/{voiceprint_id}", response_model=VoiceprintDeleteResponse)
-def delete_voiceprint(voiceprint_id: str) -> VoiceprintDeleteResponse:
+async def delete_voiceprint(voiceprint_id: str) -> VoiceprintDeleteResponse:
+    existing = next((v for v in repo.list_voiceprints() if v.voiceprint_id == voiceprint_id), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Voiceprint '{voiceprint_id}' not found.")
+    state = repo.get_settings_state()
+    if state["app_mode"] == "REAL" and existing.provider_speaker_ref:
+        ok, msg = await delete_speaker_eidos(existing.provider_speaker_ref)
+        if not ok:
+            raise HTTPException(status_code=502, detail=msg)
     deleted = repo.delete_voiceprint(voiceprint_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Voiceprint '{voiceprint_id}' not found.")

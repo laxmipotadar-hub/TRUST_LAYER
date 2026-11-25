@@ -21,6 +21,8 @@ frontend/.vite/
 # Runtime generated data (keep folder structure)
 data/cache/*.json
 data/reports/*.json
+data/secrets.local.json
+data/secrets.tmp
 !data/cache/.gitkeep
 !data/reports/.gitkeep
 !data/scenarios/.gitkeep

@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import Literal
 
 from app.schemas import (
+    CallDecision,
     CompositeTrustBreakdown,
     EvidenceEvent,
     FactorContribution,
+    FusionBand,
     LivenessCheckResult,
     ScamAnalysisResult,
     SignalStatus,
@@ -29,13 +31,45 @@ def _clamp_100(value: float) -> float:
     return max(0.0, min(100.0, float(value)))
 
 
-def verdict_from_score(score: float) -> TrustVerdict:
-    """Apply Phase 3 thresholds: 75-100 SAFE, 40-74.99 CAUTION, 0-39.99 THREAT."""
-    if score >= 75.0:
+def verdict_from_score(
+    score: float,
+    safe_threshold: float = 75.0,
+    review_threshold: float = 40.0,
+) -> TrustVerdict:
+    """Apply configurable fusion thresholds (defaults: 75+ SAFE, 40-74.99 CAUTION/REVIEW, <40 THREAT)."""
+    if score >= safe_threshold:
         return "SAFE"
-    if score >= 40.0:
+    if score >= review_threshold:
         return "CAUTION"
     return "THREAT"
+
+
+def _to_fusion_band(verdict: TrustVerdict) -> FusionBand:
+    if verdict == "CAUTION":
+        return "REVIEW"
+    return verdict
+
+
+def _to_decision(verdict: TrustVerdict) -> CallDecision:
+    if verdict == "SAFE":
+        return "ALLOW"
+    if verdict == "CAUTION":
+        return "STEP_UP"
+    if verdict == "THREAT":
+        return "BLOCK"
+    return "INCOMPLETE ANALYSIS"
+
+
+def _normalize_weights(custom: dict[str, float] | None) -> dict[str, float]:
+    base = dict(LAYER_WEIGHTS)
+    if custom:
+        for k in base:
+            if k in custom and custom[k] >= 0:
+                base[k] = float(custom[k])
+    total = sum(base.values())
+    if total <= 0:
+        return dict(LAYER_WEIGHTS)
+    return {k: round(v / total, 4) for k, v in base.items()}
 
 
 def calculate_trust_score(
@@ -53,6 +87,11 @@ def calculate_trust_score(
     scam_evidence: list[str] | None = None,
     behavioral_evidence: list[str] | None = None,
     liveness_evidence: list[str] | None = None,
+    weights: dict[str, float] | None = None,
+    safe_threshold: float = 75.0,
+    review_threshold: float = 40.0,
+    ema_alpha: float = 0.45,
+    previous_score: float | None = None,
 ) -> CompositeTrustBreakdown:
     """
     Pure, frontend-independent AEGIS 4-layer Trust Score calculation engine.
@@ -116,10 +155,11 @@ def calculate_trust_score(
         "PASS" if behavioral_safety >= 75.0 else ("WARN" if behavioral_safety >= 40.0 else "FAIL")
     )
 
-    v_contrib = round((v_score or 0.0) * LAYER_WEIGHTS["voice_authenticity"], 2)
-    s_contrib = round((s_score or 0.0) * LAYER_WEIGHTS["speaker_identity"], 2)
-    scam_contrib = round(scam_safety * LAYER_WEIGHTS["scam_safety"], 2)
-    beh_contrib = round(behavioral_safety * LAYER_WEIGHTS["behavioral_safety"], 2)
+    active_weights = _normalize_weights(weights)
+    v_contrib = round((v_score or 0.0) * active_weights["voice_authenticity"], 2)
+    s_contrib = round((s_score or 0.0) * active_weights["speaker_identity"], 2)
+    scam_contrib = round(scam_safety * active_weights["scam_safety"], 2)
+    beh_contrib = round(behavioral_safety * active_weights["behavioral_safety"], 2)
 
     layers = [
         FactorContribution(
@@ -134,7 +174,7 @@ def calculate_trust_score(
                 if syn_prob is not None and v_score is not None
                 else "(1 - Synthetic Probability) × 100 [UNAVAILABLE]"
             ),
-            weight=LAYER_WEIGHTS["voice_authenticity"],
+            weight=active_weights["voice_authenticity"],
             weighted_points=v_contrib,
             weighted_contribution=v_contrib,
             explanation=(
@@ -165,7 +205,7 @@ def calculate_trust_score(
                     else "Eidos Match % [UNAVAILABLE]"
                 )
             ),
-            weight=LAYER_WEIGHTS["speaker_identity"],
+            weight=active_weights["speaker_identity"],
             weighted_points=s_contrib,
             weighted_contribution=s_contrib,
             explanation=(
@@ -192,7 +232,7 @@ def calculate_trust_score(
             input_value=clamped_scam_risk,
             raw_score=scam_safety,
             formula=f"100 - {clamped_scam_risk:.2f} = {scam_safety:.2f}",
-            weight=LAYER_WEIGHTS["scam_safety"],
+            weight=active_weights["scam_safety"],
             weighted_points=scam_contrib,
             weighted_contribution=scam_contrib,
             explanation=(
@@ -211,7 +251,7 @@ def calculate_trust_score(
             input_value=clamped_pressure,
             raw_score=behavioral_safety,
             formula=f"100 - {clamped_pressure:.2f} = {behavioral_safety:.2f}",
-            weight=LAYER_WEIGHTS["behavioral_safety"],
+            weight=active_weights["behavioral_safety"],
             weighted_points=beh_contrib,
             weighted_contribution=beh_contrib,
             explanation=(
@@ -238,9 +278,13 @@ def calculate_trust_score(
             drivers.append("Layer 2 (Eidos) telemetry unavailable")
         return CompositeTrustBreakdown(
             composite_score=None,
+            raw_composite_score=None,
             score_based_verdict="INCOMPLETE ANALYSIS",
             verdict="INCOMPLETE ANALYSIS",
             final_decision="INCOMPLETE ANALYSIS",
+            band="INCOMPLETE ANALYSIS",
+            decision="INCOMPLETE ANALYSIS",
+            weights_used=active_weights,
             liveness_override_applied=False,
             liveness_status=liveness_state,
             recommended_action=(
@@ -252,10 +296,22 @@ def calculate_trust_score(
             primary_risk_drivers=drivers,
         )
 
-    composite_score = round(v_contrib + s_contrib + scam_contrib + beh_contrib, 2)
-    score_verdict = verdict_from_score(composite_score)
+    raw_composite = round(v_contrib + s_contrib + scam_contrib + beh_contrib, 2)
+    ema_applied = previous_score is not None
+    composite_score = (
+        round(ema_alpha * raw_composite + (1.0 - ema_alpha) * float(previous_score), 2)
+        if previous_score is not None
+        else raw_composite
+    )
+    score_verdict = verdict_from_score(
+        composite_score,
+        safe_threshold=safe_threshold,
+        review_threshold=review_threshold,
+    )
     final_decision = score_verdict
     liveness_override = False
+    voice_clone_override = False
+    conflict_overrides: list[str] = []
     policy_override: str | None = None
     drivers = []
 
@@ -268,14 +324,25 @@ def calculate_trust_score(
     if behavioral_safety < 40.0:
         drivers.append(f"High behavioral pressure ({clamped_pressure:.2f}/100)")
 
+    # Explicit conflict override: Aletheia synthetic + Eidos match -> voice-clone override
+    if ((syn_prob is not None and syn_prob >= 0.50) or v_score < 50.0) and speaker_enrolled and s_score >= 65.0:
+        voice_clone_override = True
+        final_decision = "THREAT"
+        override_msg = "Aletheia synthetic + Eidos match -> voice-clone override"
+        conflict_overrides.append(override_msg)
+        policy_override = override_msg
+        drivers.insert(0, override_msg)
+
     if liveness_available and not liveness_passed:
         liveness_override = True
         final_decision = "THREAT"
-        policy_override = (
+        liveness_msg = (
             "Challenge Liveness FAILED: Strong voice authenticity and speaker match cannot establish "
             "that the audio is live. Final security decision overridden from "
             f"{score_verdict} to THREAT (mathematical Trust Score {composite_score:.2f} preserved)."
         )
+        conflict_overrides.append("Challenge Liveness FAILED -> replay override")
+        policy_override = liveness_msg if not policy_override else f"{policy_override} | {liveness_msg}"
         drivers.insert(0, "Challenge Liveness FAILED (playback / non-live audio)")
         if liveness_evidence:
             drivers.extend(liveness_evidence)
@@ -294,11 +361,25 @@ def calculate_trust_score(
 
     return CompositeTrustBreakdown(
         composite_score=composite_score,
+        raw_composite_score=raw_composite,
+        ema_applied=ema_applied,
+        previous_smoothed_score=previous_score,
         score_based_verdict=score_verdict,
         verdict=final_decision,
         final_decision=final_decision,
+        band=_to_fusion_band(final_decision),
+        decision=_to_decision(final_decision),
         liveness_override_applied=liveness_override,
+        voice_clone_override_applied=voice_clone_override,
+        conflict_overrides=conflict_overrides,
+        weights_used=active_weights,
         liveness_status=liveness_state,
+        formula_summary=(
+            f"TRUST SCORE = (Voice × {active_weights['voice_authenticity']:.2f}) "
+            f"+ (Speaker × {active_weights['speaker_identity']:.2f}) "
+            f"+ (Scam × {active_weights['scam_safety']:.2f}) "
+            f"+ (Behavioral × {active_weights['behavioral_safety']:.2f})"
+        ),
         recommended_action=action,
         policy_override_applied=policy_override,
         factor_contributions=layers,
@@ -311,6 +392,12 @@ def compute_composite_trust(
     identity: SpeakerIdentityResult,
     scam: ScamAnalysisResult,
     liveness: LivenessCheckResult,
+    *,
+    weights: dict[str, float] | None = None,
+    safe_threshold: float = 75.0,
+    review_threshold: float = 40.0,
+    ema_alpha: float = 0.45,
+    previous_score: float | None = None,
 ) -> CompositeTrustBreakdown:
     """Adapt service result models into the pure 4-layer Trust Score engine."""
     voice_ev = [voice.detail] + list(voice.artifacts_detected)
@@ -338,6 +425,11 @@ def compute_composite_trust(
         scam_evidence=scam_ev,
         behavioral_evidence=beh_ev,
         liveness_evidence=live_ev,
+        weights=weights,
+        safe_threshold=safe_threshold,
+        review_threshold=review_threshold,
+        ema_alpha=ema_alpha,
+        previous_score=previous_score,
     )
 
 

@@ -3,11 +3,24 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+import time
+from uuid import uuid4
 import httpx
 
 from app.core.config import settings
-from app.schemas import AnalysisMode, FlaggedPhrase, RiskLevel, ScamAnalysisResult
+from app.schemas import (
+    AnalysisMode,
+    AnalysisProvenance,
+    FlaggedPhrase,
+    ManipulationAnalysisResult,
+    ManipulationCategory,
+    ManipulationMarker,
+    RiskLevel,
+    ScamAnalysisResult,
+    TranscriptSegment,
+)
 from app.services.cache_service import cache_service
+from app.services.ledger_service import record_operation
 
 
 @dataclass(frozen=True)
@@ -237,8 +250,11 @@ def format_scam_contract_dict(scam: ScamAnalysisResult) -> dict:
 async def analyze_scam_transcript(
     transcript_text: str,
     analysis_mode: AnalysisMode,
+    bypass_cache: bool = False,
+    call_id: str | None = None,
 ) -> ScamAnalysisResult:
     """Analyze transcript with Gemini API in REAL mode, or cached/deterministic fallback."""
+    t0 = time.perf_counter()
     cache_key = cache_service.compute_request_hash(
         provider="gemini_scam",
         params={"model": settings.gemini_model},
@@ -247,36 +263,53 @@ async def analyze_scam_transcript(
     if analysis_mode == "CACHED":
         cached = cache_service.get(cache_key)
         if cached and isinstance(cached.get("payload"), dict):
-            return ScamAnalysisResult(
-                **{**cached["payload"], "provenance": "CACHED ANALYSIS", "cache_hit": True}
+            res_obj = ScamAnalysisResult(
+                **{**cached["payload"], "provenance": "CACHED ANALYSIS", "cache_hit": True, "cost_credits": 0.0}
             )
-        return run_deterministic_scam_fallback(
+            if call_id:
+                record_operation(
+                    operation_id=res_obj.operation_id or f"cache_gem_{uuid4().hex[:8]}",
+                    call_id=call_id,
+                    service="gemini",
+                    endpoint=f"/models/{settings.gemini_model}:generateContent",
+                    mode="CACHED",
+                    status="done",
+                    cost_credits=0.0,
+                    latency_ms=0.0,
+                    cached=True,
+                )
+            return res_obj
+        det = run_deterministic_scam_fallback(
             transcript_text,
             provenance="CACHED ANALYSIS",
             fallback_reason=(
                 "CACHED mode active: no cached Gemini response found; deterministic keyword & weighted-rule fallback executed."
             ),
         )
+        return det.model_copy(update={"latency_ms": round((time.perf_counter() - t0) * 1000.0, 2), "model_version": "rule-engine-v1", "raw_payload": format_scam_contract_dict(det)})
 
     if analysis_mode == "SIMULATION":
-        return run_deterministic_scam_fallback(
+        det = run_deterministic_scam_fallback(
             transcript_text,
             provenance="SIMULATION",
             fallback_reason=(
                 "SIMULATION mode active: deterministic keyword & weighted-rule fallback executed without live Gemini call."
             ),
         )
+        return det.model_copy(update={"latency_ms": round((time.perf_counter() - t0) * 1000.0, 2), "model_version": "rule-engine-v1", "raw_payload": format_scam_contract_dict(det)})
 
     if not settings.gemini_configured:
-        return run_deterministic_scam_fallback(
+        det = run_deterministic_scam_fallback(
             transcript_text,
             provenance="SIMULATION",
             fallback_reason="GEMINI_API_KEY missing on server; activated deterministic keyword & weighted-rule fallback.",
         )
+        return det.model_copy(update={"latency_ms": round((time.perf_counter() - t0) * 1000.0, 2), "model_version": "rule-engine-v1", "raw_payload": format_scam_contract_dict(det)})
 
-    cached = cache_service.get(cache_key)
-    if cached and isinstance(cached.get("payload"), dict):
-        return ScamAnalysisResult(**{**cached["payload"], "cache_hit": True})
+    if not bypass_cache:
+        cached = cache_service.get(cache_key)
+        if cached and isinstance(cached.get("payload"), dict):
+            return ScamAnalysisResult(**{**cached["payload"], "cache_hit": True, "cost_credits": 0.0})
 
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -298,6 +331,7 @@ async def analyze_scam_transcript(
             resp.raise_for_status()
             data = resp.json()
 
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
         raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
         parsed = json.loads(raw_text)
 
@@ -307,6 +341,7 @@ async def analyze_scam_transcript(
         )
         patterns = list(parsed.get("detected_patterns", []))
         evidence = [FlaggedPhrase(**item) for item in parsed.get("evidence", [])]
+        op_id = f"op_gem_{uuid4().hex[:8]}"
 
         result = ScamAnalysisResult(
             risk_score=risk_score,
@@ -317,6 +352,8 @@ async def analyze_scam_transcript(
             pressure_tactics=list(parsed.get("pressure_tactics", [])),
             flagged_phrases=evidence,
             engine_used=f"Gemini API ({settings.gemini_model})",
+            model_version=settings.gemini_model,
+            latency_ms=latency_ms,
             provenance="REAL ANALYSIS",
             summary=str(parsed.get("explanation", "Gemini scam-risk evaluation completed.")),
             recommended_action=str(
@@ -325,11 +362,27 @@ async def analyze_scam_transcript(
             fallback_used=False,
             fallback_reason=None,
             cache_hit=False,
+            operation_id=op_id,
+            cost_credits=0.0,
+            raw_payload=parsed,
         )
-        cache_service.set(cache_key, "gemini_scam", result.model_dump())
+        if not bypass_cache:
+            cache_service.set(cache_key, "gemini_scam", result.model_dump())
+        if call_id:
+            record_operation(
+                operation_id=op_id,
+                call_id=call_id,
+                service="gemini",
+                endpoint=f"/models/{settings.gemini_model}:generateContent",
+                mode="FRESH",
+                status="done",
+                cost_credits=0.0,
+                latency_ms=latency_ms,
+                cached=False,
+            )
         return result
     except Exception as exc:
-        return run_deterministic_scam_fallback(
+        det = run_deterministic_scam_fallback(
             transcript_text,
             provenance="SIMULATION",
             fallback_reason=(
@@ -337,3 +390,94 @@ async def analyze_scam_transcript(
                 "activated deterministic keyword & weighted-rule fallback."
             ),
         )
+        return det.model_copy(
+            update={
+                "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                "model_version": "rule-engine-v1",
+                "raw_payload": format_scam_contract_dict(det),
+            }
+        )
+
+
+_CATEGORY_MAP: dict[str, ManipulationCategory] = {
+    "Urgent payment requests": "urgency",
+    "Secretive instructions": "secrecy",
+    "Authority impersonation": "authority",
+    "Bank-account threats": "threat",
+    "Fear-based manipulation": "threat",
+    "OTP requests": "urgency",
+    "Password disclosure": "secrecy",
+    "Remote-access requests": "threat",
+    "Suspicious financial transfers": "urgency",
+}
+
+
+def extract_manipulation_analysis(
+    transcript_text: str,
+    transcript_segments: list[TranscriptSegment] | None = None,
+    provenance: AnalysisProvenance = "SIMULATION",
+) -> ManipulationAnalysisResult:
+    """Layer 4 extractor: maps transcript into urgency/secrecy/authority/threat markers + sparkline."""
+    t0 = time.perf_counter()
+    segments = transcript_segments or (
+        [
+            TranscriptSegment(
+                id="seg-1",
+                timestamp_sec=1.0,
+                speaker="CALLER",
+                text=transcript_text,
+            )
+        ]
+        if transcript_text.strip()
+        else []
+    )
+
+    markers: list[ManipulationMarker] = []
+    counts: dict[str, int] = {"urgency": 0, "secrecy": 0, "authority": 0, "threat": 0}
+    sparkline: list[float] = []
+    cumulative_pressure = 0.0
+
+    for seg in segments:
+        if seg.speaker != "CALLER":
+            sparkline.append(round(min(100.0, cumulative_pressure), 1))
+            continue
+        seg_text = seg.text.strip()
+        for rule in THREAT_RULES:
+            match = re.search(rule.pattern, seg_text, flags=re.IGNORECASE)
+            if match:
+                cat = _CATEGORY_MAP.get(rule.category, "threat")
+                counts[cat] = counts.get(cat, 0) + 1
+                cumulative_pressure = min(100.0, cumulative_pressure + rule.pressure_weight)
+                excerpt = seg_text if len(seg_text) <= 140 else f"{seg_text[:137].rstrip()}..."
+                markers.append(
+                    ManipulationMarker(
+                        category=cat,
+                        phrase=match.group(0),
+                        excerpt=excerpt,
+                        timestamp_sec=seg.timestamp_sec,
+                        weight=rule.pressure_weight,
+                        severity=rule.severity,
+                    )
+                )
+        if seg_text.count("!") >= 1 and cumulative_pressure > 0:
+            cumulative_pressure = min(100.0, cumulative_pressure + 6.0)
+        sparkline.append(round(min(100.0, cumulative_pressure), 1))
+
+    score = round(min(100.0, cumulative_pressure), 1)
+    latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+    return ManipulationAnalysisResult(
+        score=score,
+        safety_score=round(max(0.0, 100.0 - score), 1),
+        model_version="aegis-manipulation-v1",
+        latency_ms=latency_ms,
+        category_counts=counts,
+        markers=markers,
+        sparkline=sparkline or [score],
+        provenance=provenance,
+        raw_payload={
+            "score": score,
+            "category_counts": counts,
+            "markers": [m.model_dump() for m in markers],
+            "sparkline": sparkline,
+        },
+    )

@@ -16,7 +16,9 @@ from app.schemas import (
     AudioProfile,
     CallerProfile,
     CallSession,
+    ExecutionMode,
     LivenessCheckResult,
+    ManipulationAnalysisResult,
     SegmentRiskChunk,
     SpeakerIdentityResult,
     TranscriptSegment,
@@ -26,7 +28,8 @@ from app.schemas import (
 from app.services.aletheia_service import detect_deepfake_aletheia
 from app.services.cache_service import cache_service
 from app.services.eidos_service import NEUTRAL_UNENROLLED_SCORE, verify_speaker_eidos
-from app.services.scam_analysis_service import analyze_scam_transcript
+from app.services.ledger_service import record_operation
+from app.services.scam_analysis_service import analyze_scam_transcript, extract_manipulation_analysis
 from app.services.trust_engine import build_evidence_timeline, compute_composite_trust
 
 
@@ -46,18 +49,33 @@ def _build_session_and_unified(
     caller_label: str,
     claimed_customer_id: str,
     app_mode: str,
+    execution_mode: ExecutionMode,
     analysis_mode: AnalysisMode,
     voice: VoiceAuthenticityResult,
     identity: SpeakerIdentityResult,
     scam,
+    manipulation: ManipulationAnalysisResult,
     liveness: LivenessCheckResult,
     transcript: list[TranscriptSegment],
     audio_profile: AudioProfile,
     model_status: dict[str, str],
     caller_profile: CallerProfile | None = None,
     segment_chunks: list[SegmentRiskChunk] | None = None,
+    previous_score: float | None = None,
+    credits_saved: float = 0.0,
 ) -> UnifiedCallAnalysisResponse:
-    trust = compute_composite_trust(voice, identity, scam, liveness)
+    state = repo.get_settings_state()
+    trust = compute_composite_trust(
+        voice,
+        identity,
+        scam,
+        liveness,
+        weights=state.get("layer_weights"),
+        safe_threshold=float(state.get("safe_threshold", 75.0)),
+        review_threshold=float(state.get("review_threshold", 40.0)),
+        ema_alpha=float(state.get("ema_alpha", 0.45)),
+        previous_score=previous_score,
+    )
     timeline = build_evidence_timeline(voice, identity, scam, liveness, trust)
     overall_prov = _resolve_overall_provenance(
         [voice.provenance, identity.provenance, scam.provenance, liveness.provenance]
@@ -86,6 +104,7 @@ def _build_session_and_unified(
         caller_profile=resolved_profile,
         call_state="VERDICT",
         mode="REAL" if app_mode == "REAL" else "DEMO",
+        execution_mode=execution_mode,
         analysis_mode=analysis_mode,
         overall_provenance=overall_prov,
         synthetic_probability=voice.deepfake_probability,
@@ -95,21 +114,26 @@ def _build_session_and_unified(
         behavioral_pressure_score=scam.behavioral_pressure_score,
         trust_score=trust.composite_score,
         verdict=trust.verdict,
+        band=trust.band,
+        decision=trust.decision,
         model_status=model_status,
         voice_authenticity=voice,
         speaker_identity=identity,
         scam_analysis=scam,
+        manipulation_analysis=manipulation,
         liveness=liveness,
         trust_breakdown=trust,
         transcript=transcript,
         evidence_timeline=timeline,
         segment_chunks=segment_chunks or [],
         audio_profile=audio_profile,
+        credits_saved=credits_saved,
     )
     repo.save_call(session)
 
     return UnifiedCallAnalysisResponse(
         call_id=call_id,
+        execution_mode=execution_mode,
         analysis_mode=analysis_mode,
         synthetic_probability=voice.deepfake_probability,
         voice_authenticity=voice.score,
@@ -118,10 +142,13 @@ def _build_session_and_unified(
         behavioral_pressure_score=scam.behavioral_pressure_score,
         trust_score=trust.composite_score,
         verdict=trust.verdict,
+        band=trust.band,
+        decision=trust.decision,
         evidence=timeline,
         timestamp=timestamp,
         model_status=model_status,
         recommended_action=trust.recommended_action,
+        credits_saved=credits_saved,
         session=session,
     )
 
@@ -156,23 +183,45 @@ async def analyze_scenario_call(scenario_id: str) -> UnifiedCallAnalysisResponse
             "liveness": "CACHED_FIXTURE",
         }
 
+    call_id = f"CALL-{uuid4().hex[:8].upper()}"
+    joined_caller = " ".join(seg.text for seg in scenario.transcript if seg.speaker == "CALLER")
+    manipulation = extract_manipulation_analysis(
+        joined_caller,
+        transcript_segments=scenario.transcript,
+        provenance="CACHED ANALYSIS" if app_mode == "DEMO" else scam.provenance,
+    )
+    record_operation(
+        operation_id=f"demo_{scenario.id.lower()}_{uuid4().hex[:6]}",
+        call_id=call_id,
+        service="pipeline",
+        endpoint="/api/scenarios/run",
+        mode="DEMO",
+        status="done",
+        cost_credits=0.0,
+        latency_ms=12.0,
+        cached=False,
+    )
+
     return _build_session_and_unified(
-        call_id=f"CALL-{uuid4().hex[:8].upper()}",
+        call_id=call_id,
         timestamp=datetime.now(timezone.utc).isoformat(),
         scenario_id=scenario.id,
         caller_label=f"{scenario.code}: {scenario.caller_name}",
         claimed_customer_id=scenario.claimed_customer_id,
         app_mode=app_mode,
+        execution_mode="DEMO",
         analysis_mode=analysis_mode,
         voice=voice,
         identity=identity,
         scam=scam,
+        manipulation=manipulation,
         liveness=liveness,
         transcript=scenario.transcript,
         audio_profile=scenario.audio_profile,
         model_status=model_status,
         caller_profile=get_scenario_caller_profile(scenario.id, identity),
         segment_chunks=get_scenario_segment_chunks(scenario.id),
+        credits_saved=500.0 if scenario.id == "S2" else 0.0,
     )
 
 
@@ -184,14 +233,34 @@ async def analyze_call_unified(
     claimed_customer_id: str,
     caller_label: str,
     requested_mode: AnalysisMode | None = None,
+    execution_mode: ExecutionMode | None = None,
     duration_hint_sec: float | None = None,
+    previous_score: float | None = None,
 ) -> UnifiedCallAnalysisResponse:
     """Coordinate Aletheia, Eidos, Scam Analysis, Behavioral Pressure, and Trust Score."""
     state = repo.get_settings_state()
     app_mode = state["app_mode"]
-    mode: AnalysisMode = requested_mode or ("REAL" if app_mode == "REAL" else "SIMULATION")
+    call_id = f"CALL-{uuid4().hex[:8].upper()}"
+
+    if execution_mode == "LIVE":
+        mode: AnalysisMode = "REAL"
+        effective_exec_mode: ExecutionMode = "LIVE"
+        bypass_cache = True
+    elif execution_mode == "CACHED":
+        mode = "CACHED"
+        effective_exec_mode = "CACHED"
+        bypass_cache = False
+    elif execution_mode == "DEMO":
+        mode = "SIMULATION"
+        effective_exec_mode = "DEMO"
+        bypass_cache = False
+    else:
+        mode = requested_mode or ("REAL" if app_mode == "REAL" else "SIMULATION")
+        effective_exec_mode = "LIVE" if mode == "REAL" else ("CACHED" if mode == "CACHED" else "DEMO")
+        bypass_cache = mode == "REAL" and not state.get("cache_enabled", True)
 
     live_segments: list[SegmentRiskChunk] = []
+    credits_saved = 0.0
 
     if mode == "REAL":
         if audio_bytes:
@@ -199,6 +268,8 @@ async def analyze_call_unified(
                 audio_bytes,
                 filename=filename,
                 duration_hint_sec=duration_hint_sec,
+                bypass_cache=bypass_cache,
+                call_id=call_id,
             )
             voice = aletheia_eval.result
             aletheia_status = aletheia_eval.model_status
@@ -214,7 +285,13 @@ async def analyze_call_unified(
             )
             aletheia_status = "UNAVAILABLE"
 
-        eidos_eval = await verify_speaker_eidos(audio_bytes, claimed_customer_id, filename=filename)
+        eidos_eval = await verify_speaker_eidos(
+            audio_bytes,
+            claimed_customer_id,
+            filename=filename,
+            bypass_cache=bypass_cache,
+            call_id=call_id,
+        )
         identity = eidos_eval.result
         eidos_status = eidos_eval.model_status
 
@@ -239,7 +316,12 @@ async def analyze_call_unified(
             )
             liveness_status = "UNAVAILABLE"
 
-        scam = await analyze_scam_transcript(transcript_text, analysis_mode="REAL")
+        scam = await analyze_scam_transcript(
+            transcript_text,
+            analysis_mode="REAL",
+            bypass_cache=bypass_cache,
+            call_id=call_id,
+        )
         scam_status = (
             "FALLBACK"
             if scam.fallback_used
@@ -249,6 +331,7 @@ async def analyze_call_unified(
             "aletheia": aletheia_status,
             "eidos": eidos_status,
             "scam_analysis": scam_status,
+            "manipulation": "OK",
             "liveness": liveness_status,
         }
     elif mode == "CACHED":
@@ -384,18 +467,27 @@ async def analyze_call_unified(
             triggers=[fp.phrase for fp in scam.flagged_phrases],
         )
     ]
+    manipulation = extract_manipulation_analysis(
+        transcript_text,
+        transcript_segments=transcript_segments,
+        provenance=scam.provenance,
+    )
+    if effective_exec_mode == "CACHED":
+        credits_saved = 524.0 if aletheia_status == "CACHED" else 0.0
 
     return _build_session_and_unified(
-        call_id=f"CALL-{uuid4().hex[:8].upper()}",
+        call_id=call_id,
         timestamp=datetime.now(timezone.utc).isoformat(),
         scenario_id=None,
         caller_label=caller_label,
         claimed_customer_id=claimed_customer_id,
         app_mode=app_mode,
+        execution_mode=effective_exec_mode,
         analysis_mode=mode,
         voice=voice,
         identity=identity,
         scam=scam,
+        manipulation=manipulation,
         liveness=liveness,
         transcript=transcript_segments,
         audio_profile=AudioProfile(
@@ -408,4 +500,6 @@ async def analyze_call_unified(
         ),
         model_status=model_status,
         segment_chunks=live_segments,
+        previous_score=previous_score,
+        credits_saved=credits_saved,
     )

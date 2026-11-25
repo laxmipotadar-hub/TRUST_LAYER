@@ -9,11 +9,13 @@ from app.core.config import settings
 from app.schemas import (
     AppMode,
     CallActionRecord,
+    CallFeedbackRecord,
     CallSession,
     ChallengeSession,
     ThreatRegistryEntry,
     VoiceprintRecord,
 )
+from app.schemas.common import DEFAULT_LAYER_WEIGHTS
 
 
 SEEDED_VOICEPRINTS = [
@@ -153,11 +155,21 @@ class AegisRepository:
     def get_settings_state(self) -> dict[str, Any]:
         with self._lock:
             raw = self._read(self._state_path)
+            weights = raw.get("layer_weights") or {}
+            merged_weights = {
+                key: float(weights.get(key, default_val))
+                for key, default_val in DEFAULT_LAYER_WEIGHTS.items()
+            }
             return {
                 "app_mode": "REAL" if raw.get("app_mode") == "REAL" else "DEMO",
                 "cache_enabled": bool(raw.get("cache_enabled", True)),
                 "bot_guard_enabled": bool(raw.get("bot_guard_enabled", True)),
                 "bot_guard_threshold": int(raw.get("bot_guard_threshold", 40)),
+                "layer_weights": merged_weights,
+                "safe_threshold": float(raw.get("safe_threshold", 75.0)),
+                "review_threshold": float(raw.get("review_threshold", 40.0)),
+                "ema_alpha": float(raw.get("ema_alpha", 0.45)),
+                "language": str(raw.get("language", "en")),
             }
 
     def update_settings_state(
@@ -166,6 +178,11 @@ class AegisRepository:
         cache_enabled: bool | None = None,
         bot_guard_enabled: bool | None = None,
         bot_guard_threshold: int | None = None,
+        layer_weights: dict[str, float] | None = None,
+        safe_threshold: float | None = None,
+        review_threshold: float | None = None,
+        ema_alpha: float | None = None,
+        language: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             current = self._read(self._state_path)
@@ -177,6 +194,16 @@ class AegisRepository:
                 current["bot_guard_enabled"] = bot_guard_enabled
             if bot_guard_threshold is not None:
                 current["bot_guard_threshold"] = bot_guard_threshold
+            if layer_weights is not None:
+                current["layer_weights"] = layer_weights
+            if safe_threshold is not None:
+                current["safe_threshold"] = safe_threshold
+            if review_threshold is not None:
+                current["review_threshold"] = review_threshold
+            if ema_alpha is not None:
+                current["ema_alpha"] = ema_alpha
+            if language is not None:
+                current["language"] = language
             self._write(self._state_path, current)
             return current
 
@@ -262,10 +289,35 @@ class AegisRepository:
                     return CallSession(**item)
             return None
 
+    def set_call_feedback(self, call_id: str, feedback: CallFeedbackRecord) -> CallSession | None:
+        with self._lock:
+            items: list[dict[str, Any]] = self._read(self._calls_path)
+            for item in items:
+                if item.get("call_id") == call_id:
+                    item["feedback"] = feedback.model_dump()
+                    self._write(self._calls_path, items)
+                    return CallSession(**item)
+            return None
+
     # --- Reports ---
     def save_report(self, report_id: str, payload: dict[str, Any]) -> None:
         with self._lock:
             self._write(settings.reports_dir / f"{report_id}.json", payload)
+
+    def list_reports(self, limit: int = 30) -> list[dict[str, Any]]:
+        with self._lock:
+            files = sorted(
+                [p for p in settings.reports_dir.glob("RPT-*.json")],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[:limit]
+            out: list[dict[str, Any]] = []
+            for p in files:
+                try:
+                    out.append(json.loads(p.read_text(encoding="utf-8")))
+                except Exception:
+                    continue
+            return out
 
     # --- Voiceprints ---
     def list_voiceprints(self) -> list[VoiceprintRecord]:

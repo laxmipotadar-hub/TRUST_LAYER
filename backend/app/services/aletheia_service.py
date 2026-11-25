@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import io
+import time
 from uuid import uuid4
 import wave
 import httpx
@@ -9,6 +10,7 @@ import httpx
 from app.core.config import settings
 from app.schemas import SegmentRiskChunk, VoiceAuthenticityResult
 from app.services.cache_service import cache_service
+from app.services.ledger_service import record_operation
 
 
 MIN_DURATION_SEC = 4.0
@@ -85,7 +87,7 @@ def split_wav_into_sliding_chunks(
 async def _submit_single_chunk(
     audio_bytes: bytes,
     filename: str,
-) -> tuple[dict | None, str, str]:
+) -> tuple[dict | None, str, str, float]:
     """Submit a single 4-120s audio clip to POST /v1/deepfake/detect."""
     url = f"{settings.detectif_api_base_url.rstrip('/')}/v1/deepfake/detect"
     headers = {
@@ -93,28 +95,32 @@ async def _submit_single_chunk(
         "Idempotency-Key": str(uuid4()),
     }
     files = {"file": (filename, audio_bytes, "audio/wav")}
+    t0 = time.perf_counter()
 
     try:
         async with httpx.AsyncClient(timeout=25.0) as client:
             resp = await client.post(url, headers=headers, files=files)
+            latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
             if resp.status_code in (401, 403):
-                return None, "AUTH_ERROR", f"DetectifAI authentication failed (HTTP {resp.status_code})."
+                return None, "AUTH_ERROR", f"DetectifAI authentication failed (HTTP {resp.status_code}).", latency_ms
+            if resp.status_code == 402:
+                return None, "INSUFFICIENT_CREDITS", "DetectifAI credit balance exhausted (HTTP 402).", latency_ms
             if resp.status_code == 429:
-                return None, "RATE_LIMITED", "DetectifAI Aletheia rate limit exceeded (HTTP 429)."
+                return None, "RATE_LIMITED", "DetectifAI Aletheia rate limit exceeded (HTTP 429).", latency_ms
             resp.raise_for_status()
             data = resp.json()
     except httpx.TimeoutException:
-        return None, "TIMEOUT", "DetectifAI Aletheia request timed out."
+        return None, "TIMEOUT", "DetectifAI Aletheia request timed out.", round((time.perf_counter() - t0) * 1000.0, 2)
     except httpx.HTTPStatusError as exc:
-        return None, "ERROR", f"DetectifAI Aletheia HTTP error ({exc.response.status_code})."
+        return None, "ERROR", f"DetectifAI Aletheia HTTP error ({exc.response.status_code}).", round((time.perf_counter() - t0) * 1000.0, 2)
     except Exception as exc:
-        return None, "ERROR", f"DetectifAI Aletheia request failed: {exc.__class__.__name__}"
+        return None, "ERROR", f"DetectifAI Aletheia request failed: {exc.__class__.__name__}", round((time.perf_counter() - t0) * 1000.0, 2)
 
     result = data.get("result") if isinstance(data, dict) else None
     if not isinstance(result, dict) or "score" not in result or "verdict" not in result:
-        return None, "INVALID_RESPONSE", "DetectifAI Aletheia returned unexpected response structure."
+        return None, "INVALID_RESPONSE", "DetectifAI Aletheia returned unexpected response structure.", latency_ms
 
-    return data, "OK", "Live DetectifAI Aletheia deepfake detection completed."
+    return data, "OK", "Live DetectifAI Aletheia deepfake detection completed.", latency_ms
 
 
 async def detect_deepfake_aletheia(
@@ -122,6 +128,8 @@ async def detect_deepfake_aletheia(
     filename: str = "call_audio.wav",
     duration_hint_sec: float | None = None,
     use_sliding_chunks: bool = False,
+    bypass_cache: bool = False,
+    call_id: str | None = None,
 ) -> AletheiaEvaluation:
     """Validate audio, check cache, and invoke DetectifAI Aletheia POST /v1/deepfake/detect."""
     if not audio_bytes:
@@ -190,23 +198,39 @@ async def detect_deepfake_aletheia(
         params={"use_sliding_chunks": use_sliding_chunks},
         audio_bytes=audio_bytes,
     )
-    cached = cache_service.get(cache_key)
-    if cached and isinstance(cached.get("payload"), dict):
-        p = cached["payload"]
-        return AletheiaEvaluation(
-            result=VoiceAuthenticityResult(**{**p, "cache_hit": True}),
-            model_status="CACHED",
-        )
+    if not bypass_cache:
+        cached = cache_service.get(cache_key)
+        if cached and isinstance(cached.get("payload"), dict):
+            p = cached["payload"]
+            res_obj = VoiceAuthenticityResult(**{**p, "cache_hit": True, "cost_credits": 0.0})
+            if call_id:
+                record_operation(
+                    operation_id=res_obj.operation_id or res_obj.request_id or f"cache_{uuid4().hex[:8]}",
+                    call_id=call_id,
+                    service="aletheia",
+                    endpoint="/v1/deepfake/detect",
+                    mode="CACHED",
+                    status="done",
+                    cost_credits=0.0,
+                    latency_ms=0.0,
+                    cached=True,
+                )
+            return AletheiaEvaluation(result=res_obj, model_status="CACHED")
 
     chunks = split_wav_into_sliding_chunks(audio_bytes) if use_sliding_chunks else [audio_bytes]
     chunk_scores: list[float] = []
     chunk_artifacts: list[str] = []
     segment_chunks: list[SegmentRiskChunk] = []
     last_request_id: str | None = None
+    last_operation_id: str | None = None
+    total_credits = 0.0
+    total_latency_ms = 0.0
+    raw_responses: list[dict] = []
 
     for idx, chunk in enumerate(chunks):
         chunk_name = filename if len(chunks) == 1 else f"chunk_{idx}_{filename}"
-        data, status_code, message = await _submit_single_chunk(chunk, chunk_name)
+        data, status_code, message, chunk_latency = await _submit_single_chunk(chunk, chunk_name)
+        total_latency_ms += chunk_latency
         if data is None:
             return AletheiaEvaluation(
                 result=VoiceAuthenticityResult(
@@ -216,12 +240,16 @@ async def detect_deepfake_aletheia(
                     artifacts_detected=[message],
                     provenance="REAL ANALYSIS",
                     detail=message,
+                    latency_ms=round(total_latency_ms, 2),
                 ),
                 model_status=status_code,
             )
 
+        raw_responses.append(data)
         res = data["result"]
         last_request_id = data.get("request_id")
+        last_operation_id = data.get("operation_id") or last_request_id
+        total_credits += float(data.get("credits_used") or data.get("cost_credits") or 24.0)
         chunk_score = float(max(0.0, min(1.0, float(res["score"]))))
         chunk_scores.append(chunk_score)
 
@@ -263,7 +291,24 @@ async def detect_deepfake_aletheia(
         ),
         cache_hit=False,
         request_id=last_request_id,
+        operation_id=last_operation_id,
+        cost_credits=round(total_credits, 2),
+        latency_ms=round(total_latency_ms, 2),
+        raw_payload=raw_responses[-1] if len(raw_responses) == 1 else {"chunks": raw_responses},
     )
-    cache_service.set(cache_key, "aletheia", normalized.model_dump())
+    if not bypass_cache:
+        cache_service.set(cache_key, "aletheia", normalized.model_dump())
+    if call_id:
+        record_operation(
+            operation_id=last_operation_id or f"op_ale_{uuid4().hex[:8]}",
+            call_id=call_id,
+            service="aletheia",
+            endpoint="/v1/deepfake/detect",
+            mode="FRESH",
+            status="done",
+            cost_credits=normalized.cost_credits,
+            latency_ms=normalized.latency_ms or 0.0,
+            cached=False,
+        )
 
     return AletheiaEvaluation(result=normalized, model_status="OK", segments=segment_chunks)

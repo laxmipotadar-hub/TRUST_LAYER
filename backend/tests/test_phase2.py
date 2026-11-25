@@ -236,16 +236,17 @@ async def test_scam_analysis_nine_categories_and_gemini_mock() -> None:
 
 def test_unified_analyze_endpoint_never_fakes_safe_on_real_failure() -> None:
     wav_5s = _make_wav_bytes(5.0)
-    resp = client.post(
-        "/api/calls/analyze",
-        files={"file": ("probe.wav", wav_5s, "audio/wav")},
-        data={
-            "transcript_text": "Hello, I would like to check my balance please.",
-            "claimed_customer_id": "CUST-4821-MARCUS",
-            "caller_label": "Real Failure Check",
-            "analysis_mode": "REAL",
-        },
-    )
+    with patch.object(settings, "detectif_api_key", ""):
+        resp = client.post(
+            "/api/calls/analyze",
+            files={"file": ("probe.wav", wav_5s, "audio/wav")},
+            data={
+                "transcript_text": "Hello, I would like to check my balance please.",
+                "claimed_customer_id": "CUST-4821-MARCUS",
+                "caller_label": "Real Failure Check",
+                "analysis_mode": "REAL",
+            },
+        )
     assert resp.status_code == 200
     data = resp.json()
     for required_key in (
