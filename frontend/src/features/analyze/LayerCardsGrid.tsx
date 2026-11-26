@@ -17,6 +17,7 @@ import { Skeleton } from "../../components/ui/Skeleton";
 import type { CallSession, LayerRunStatus } from "../../types";
 import type { LayerStatuses } from "../../context/AnalysisContext";
 import { formatSimilarity, formatSyntheticLikelihood } from "../../lib/format";
+import { formatEidosReason, formatEidosSkippedTitle } from "./eidosStatus";
 
 export interface LayerCardsGridProps {
   call: CallSession | null;
@@ -152,12 +153,7 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
     statuses.eidos === "done" &&
     (e.status === "PASS" || normalizedDecision === "MATCH");
 
-  const eidosSkippedLabel =
-    e.skip_reason === "aletheia_fake"
-      ? "Skipped — Eidos not needed, 1 call saved"
-      : e.skip_reason === "no_voice_id"
-      ? "Skipped — No live Voice ID enrolled"
-      : "Skipped";
+  const eidosSkippedLabel = formatEidosSkippedTitle(e);
 
   const scriptUnavailable =
     s.status === "UNAVAILABLE" || s.risk_score === null || s.safety_score === null;
@@ -196,6 +192,7 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
         title="Layer 2 · Eidos Speaker Identity"
         icon={<UserCheck className="w-4 h-4 text-[var(--brand-steel)] shrink-0" />}
         status={statuses.eidos}
+        statusLabel={statuses.eidos === "skipped" ? formatEidosReason(e) : undefined}
         scoreLabel={
           statuses.eidos === "skipped"
             ? eidosSkippedLabel

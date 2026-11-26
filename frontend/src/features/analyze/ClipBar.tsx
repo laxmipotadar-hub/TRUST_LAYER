@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Mic, Upload, FileAudio, StopCircle, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { Badge } from "../../components/ui/Badge";
 import { Banner } from "../../components/ui/Banner";
 import { copy } from "../../copy";
 import { DEMO_SCENARIO_LIST } from "../../mocks/fixtures";
@@ -13,9 +15,12 @@ export interface ClipBarProps {
   executionMode: ExecutionMode;
   activeScenarioId: string | null;
   voiceprints: VoiceprintRecord[];
+  selectedCustomerId: string;
+  onSelectCustomerId: (customerId: string) => void;
   isLoading: boolean;
   onSelectScenario: (id: "S1" | "S2" | "S3" | "S4") => void;
   onClearSession?: () => void;
+  onAudioLevelChange?: (level: number) => void;
   onAnalyzeAudio: (params: {
     file?: Blob;
     filename?: string;
@@ -27,6 +32,7 @@ export interface ClipBarProps {
 }
 
 const MIN_ALETHEIA_SECONDS = 4.1;
+const MIN_EIDOS_SPEECH_SECONDS = 10.0;
 
 const isLiveVoiceprint = (vp: VoiceprintRecord): boolean => {
   const sid = (vp.provider_speaker_id || vp.provider_speaker_ref || "").trim();
@@ -42,15 +48,19 @@ export const ClipBar: React.FC<ClipBarProps> = ({
   executionMode,
   activeScenarioId,
   voiceprints,
+  selectedCustomerId,
+  onSelectCustomerId,
   isLoading,
   onSelectScenario,
   onClearSession,
+  onAudioLevelChange,
   onAnalyzeAudio,
 }) => {
+  const navigate = useNavigate();
   const isLive = executionMode === "LIVE";
   const [showCustom, setShowCustom] = useState(isLive);
 
-  // Deduplicate active customers by customer_id, always preferring a live REAL ANALYSIS voiceprint
+  // Deduplicate active customers by customer_id, always preferring a live voiceprint
   const uniqueActiveVoiceprints = useMemo(() => {
     const byCustomer = new Map<string, VoiceprintRecord>();
     for (const vp of voiceprints) {
@@ -63,24 +73,38 @@ export const ClipBar: React.FC<ClipBarProps> = ({
     return Array.from(byCustomer.values());
   }, [voiceprints]);
 
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string>(() => {
-    const liveDefault = uniqueActiveVoiceprints.find(isLiveVoiceprint);
-    return liveDefault?.customer_id || uniqueActiveVoiceprints[0]?.customer_id || "CUST-4821-MARCUS";
-  });
+  const liveVoiceprints = useMemo(
+    () => uniqueActiveVoiceprints.filter(isLiveVoiceprint),
+    [uniqueActiveVoiceprints]
+  );
+  const demoOnlyVoiceprints = useMemo(
+    () => uniqueActiveVoiceprints.filter((vp) => !isLiveVoiceprint(vp)),
+    [uniqueActiveVoiceprints]
+  );
+  const sortedVoiceprints = useMemo(
+    () => [...liveVoiceprints, ...demoOnlyVoiceprints],
+    [liveVoiceprints, demoOnlyVoiceprints]
+  );
+  const selectedVoiceprint = useMemo(
+    () => uniqueActiveVoiceprints.find((v) => v.customer_id === selectedCustomerId) || null,
+    [uniqueActiveVoiceprints, selectedCustomerId]
+  );
+  const selectedIsLive = Boolean(selectedVoiceprint && isLiveVoiceprint(selectedVoiceprint));
 
   useEffect(() => {
-    if (uniqueActiveVoiceprints.length === 0) return;
-    const hasCurrent = uniqueActiveVoiceprints.some((v) => v.customer_id === selectedCustomerId);
-    const currentIsLive = uniqueActiveVoiceprints.some(
+    if (sortedVoiceprints.length === 0) return;
+    if (selectedCustomerId === "UNENROLLED-CALLER") return;
+    const hasCurrent = sortedVoiceprints.some((v) => v.customer_id === selectedCustomerId);
+    const currentIsLive = sortedVoiceprints.some(
       (v) => v.customer_id === selectedCustomerId && isLiveVoiceprint(v)
     );
     if (!hasCurrent || (isLive && !currentIsLive && selectedCustomerId === "CUST-4821-MARCUS")) {
-      const preferred =
-        (isLive ? uniqueActiveVoiceprints.find(isLiveVoiceprint) : undefined) ||
-        uniqueActiveVoiceprints[0];
-      if (preferred) setSelectedCustomerId(preferred.customer_id);
+      const preferred = (isLive ? liveVoiceprints[0] : undefined) || sortedVoiceprints[0];
+      if (preferred && preferred.customer_id !== selectedCustomerId) {
+        onSelectCustomerId(preferred.customer_id);
+      }
     }
-  }, [uniqueActiveVoiceprints, selectedCustomerId, isLive]);
+  }, [sortedVoiceprints, liveVoiceprints, selectedCustomerId, isLive, onSelectCustomerId]);
   const [transcriptText, setTranscriptText] = useState("");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedMeta, setUploadedMeta] = useState<{
@@ -99,6 +123,33 @@ export const ClipBar: React.FC<ClipBarProps> = ({
   } | null>(null);
   const [audioErr, setAudioErr] = useState<string | null>(null);
   const [helper] = useState(() => new AudioCaptureHelper());
+  const playbackLevelTimerRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (playbackLevelTimerRef.current !== null) {
+        window.clearInterval(playbackLevelTimerRef.current);
+      }
+    };
+  }, []);
+
+  const stopPlaybackTelemetry = () => {
+    if (playbackLevelTimerRef.current !== null) {
+      window.clearInterval(playbackLevelTimerRef.current);
+      playbackLevelTimerRef.current = null;
+    }
+    onAudioLevelChange?.(0);
+  };
+
+  const startPlaybackTelemetry = () => {
+    stopPlaybackTelemetry();
+    let step = 0;
+    playbackLevelTimerRef.current = window.setInterval(() => {
+      step = (step + 1) % 6;
+      const pulse = [28, 64, 48, 82, 56, 36][step] || 40;
+      onAudioLevelChange?.(pulse);
+    }, 180);
+  };
 
   const clearPreviousClip = () => {
     if (recordedAudio?.url) URL.revokeObjectURL(recordedAudio.url);
@@ -146,6 +197,7 @@ export const ClipBar: React.FC<ClipBarProps> = ({
         const res = await helper.stop();
         setIsRecording(false);
         setMicLevel(0);
+        onAudioLevelChange?.(0);
         setRecordedAudio({
           blob: res.blob,
           url: res.url,
@@ -165,7 +217,10 @@ export const ClipBar: React.FC<ClipBarProps> = ({
     } else {
       clearPreviousClip();
       try {
-        await helper.start((lvl) => setMicLevel(lvl));
+        await helper.start((lvl) => {
+          setMicLevel(lvl);
+          onAudioLevelChange?.(lvl);
+        });
         setIsRecording(true);
       } catch (err) {
         setIsRecording(false);
@@ -175,9 +230,15 @@ export const ClipBar: React.FC<ClipBarProps> = ({
   };
 
   const activeDuration = uploadedMeta?.duration ?? recordedAudio?.duration ?? null;
+  const activeSpeechDuration =
+    recordedAudio !== null
+      ? Number((recordedAudio.duration * Math.max(0, 1 - recordedAudio.silenceRatio)).toFixed(1))
+      : activeDuration;
   const activePreviewUrl = uploadedMeta?.url ?? recordedAudio?.url ?? null;
   const activeSampleRate = uploadedMeta?.sampleRate ?? recordedAudio?.sampleRate ?? null;
   const clipTooShort = activeDuration !== null && activeDuration <= 4.0;
+  const eidosClipTooShort =
+    activeSpeechDuration !== null && activeSpeechDuration < MIN_EIDOS_SPEECH_SECONDS;
   const hasClip = Boolean(uploadedFile || recordedAudio);
 
   const handleAnalyzeCustom = () => {
@@ -190,7 +251,7 @@ export const ClipBar: React.FC<ClipBarProps> = ({
       transcript_text: transcriptText,
       claimed_customer_id: selectedCustomerId,
       caller_label: selectedVp ? `${selectedVp.customer_name} (${selectedCustomerId})` : selectedCustomerId,
-      duration_hint_sec: activeDuration ?? undefined,
+      duration_hint_sec: activeSpeechDuration ?? activeDuration ?? undefined,
     });
   };
 
@@ -258,69 +319,139 @@ export const ClipBar: React.FC<ClipBarProps> = ({
             </Banner>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-            <div className="md:col-span-4">
-              <label
-                htmlFor="claimed-customer-select"
-                className="block text-[14px] font-medium text-[var(--text-secondary)] mb-1"
-              >
-                {copy.clipSelector.claimedUserLabel}
-              </label>
+          <div className="space-y-3">
+            <div>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                <label
+                  htmlFor="claimed-customer-select"
+                  className="text-[14px] font-medium text-[var(--text-secondary)]"
+                >
+                  {copy.clipSelector.claimedUserLabel}
+                </label>
+                {selectedIsLive ? (
+                  <Badge variant="success" size="sm">Live</Badge>
+                ) : (
+                  <Badge variant="warning" size="sm">Demo only</Badge>
+                )}
+              </div>
               <select
                 id="claimed-customer-select"
                 value={selectedCustomerId}
-                onChange={(e) => setSelectedCustomerId(e.target.value)}
+                onChange={(e) => onSelectCustomerId(e.target.value)}
                 className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-[14px] bg-[var(--surface)] text-[var(--text-primary)]"
               >
-                {uniqueActiveVoiceprints.map((vp) => (
-                  <option key={vp.voiceprint_id} value={vp.customer_id}>
-                    {vp.customer_name} ({vp.customer_id}) ·{" "}
-                    {isLiveVoiceprint(vp) ? "Live Voice ID" : "Demo Only"}
-                  </option>
-                ))}
-                <option value="UNENROLLED-CALLER">Unenrolled Caller</option>
+                {isLive ? (
+                  <>
+                    <optgroup label="Live-Enrolled (DetectifAI Eidos)">
+                      {liveVoiceprints.length === 0 ? (
+                        <option value="" disabled>
+                          No live Voice ID enrolled yet
+                        </option>
+                      ) : (
+                        liveVoiceprints.map((vp) => (
+                          <option key={vp.voiceprint_id} value={vp.customer_id}>
+                            [Live] {vp.customer_name} ({vp.customer_id})
+                          </option>
+                        ))
+                      )}
+                    </optgroup>
+                    <optgroup label="Demo only (cannot verify live)">
+                      {demoOnlyVoiceprints.map((vp) => (
+                        <option key={vp.voiceprint_id} value={vp.customer_id}>
+                          {vp.customer_name} ({vp.customer_id}) · Demo only
+                        </option>
+                      ))}
+                      <option value="UNENROLLED-CALLER">Unenrolled Caller (Demo / No ID)</option>
+                    </optgroup>
+                  </>
+                ) : (
+                  <>
+                    {sortedVoiceprints.map((vp) => (
+                      <option key={vp.voiceprint_id} value={vp.customer_id}>
+                        {vp.customer_name} ({vp.customer_id}) ·{" "}
+                        {isLiveVoiceprint(vp) ? "Live Voice ID" : "Demo Only"}
+                      </option>
+                    ))}
+                    <option value="UNENROLLED-CALLER">Unenrolled Caller</option>
+                  </>
+                )}
               </select>
             </div>
 
-            <div className="md:col-span-5 flex flex-wrap items-center gap-2">
-              <Button
-                variant={isRecording ? "danger" : "secondary"}
-                size="sm"
-                onClick={toggleRecording}
-                icon={isRecording ? <StopCircle className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-              >
-                {isRecording ? `Stop (${micLevel}%)` : "Record 16 kHz WAV"}
-              </Button>
+            {isLive && !selectedIsLive && (
+              <Banner variant="warn" title="No live Voice ID">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    No live Voice ID: Eidos will be skipped. Enroll one or pick a live customer.
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="whitespace-nowrap shrink-0"
+                    onClick={() => {
+                      const q = new URLSearchParams();
+                      if (selectedCustomerId && selectedCustomerId !== "UNENROLLED-CALLER") {
+                        q.set("customer_id", selectedCustomerId);
+                      }
+                      if (selectedVoiceprint?.customer_name) {
+                        q.set("customer_name", selectedVoiceprint.customer_name);
+                      }
+                      navigate(`/enroll${q.toString() ? `?${q.toString()}` : ""}`);
+                    }}
+                  >
+                    Enroll live Voice ID
+                  </Button>
+                </div>
+              </Banner>
+            )}
 
-              <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--fill-subtle)] text-[14px] font-semibold text-[var(--brand-steel)] cursor-pointer">
-                <Upload className="w-4 h-4" />
-                <span>{copy.clipSelector.tabUpload}</span>
-                <input
-                  type="file"
-                  accept="audio/*"
-                  className="hidden"
-                  onChange={handleFileChange}
-                />
-              </label>
+            {isLive && hasClip && !clipTooShort && eidosClipTooShort && (
+              <Banner variant="warn" title="Clip too short for speaker verification">
+                Speech duration is {activeSpeechDuration?.toFixed(1)}s (need &gt;= 10 s of speech); Eidos will be skipped at 0 credits.
+              </Banner>
+            )}
 
-              {(uploadedFile || recordedAudio) && (
-                <span className="text-[14px] text-[var(--text-secondary)] flex items-center gap-1 truncate max-w-[190px]">
-                  <FileAudio className="w-4 h-4 text-[var(--brand-steel)] shrink-0" />
-                  {uploadedFile
-                    ? uploadedFile.name
-                    : `${formatDuration(recordedAudio?.duration)} (${Math.round((1 - (recordedAudio?.silenceRatio || 0)) * 100)}% speech)`}
-                </span>
-              )}
-            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                <Button
+                  variant={isRecording ? "danger" : "secondary"}
+                  size="sm"
+                  className="whitespace-nowrap shrink-0"
+                  onClick={toggleRecording}
+                  icon={isRecording ? <StopCircle className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                >
+                  {isRecording ? `Stop (${micLevel}%)` : "Record 16 kHz WAV"}
+                </Button>
 
-            <div className="md:col-span-3 flex justify-end">
+                <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--fill-subtle)] text-[14px] font-semibold text-[var(--brand-steel)] cursor-pointer whitespace-nowrap shrink-0">
+                  <Upload className="w-4 h-4 shrink-0" />
+                  <span>{copy.clipSelector.tabUpload}</span>
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                </label>
+
+                {(uploadedFile || recordedAudio) && (
+                  <span className="text-[14px] text-[var(--text-secondary)] flex items-center gap-1 truncate max-w-[220px]">
+                    <FileAudio className="w-4 h-4 text-[var(--brand-steel)] shrink-0" />
+                    {uploadedFile
+                      ? uploadedFile.name
+                      : `${formatDuration(recordedAudio?.duration)} (${Math.round((1 - (recordedAudio?.silenceRatio || 0)) * 100)}% speech)`}
+                  </span>
+                )}
+              </div>
+
               <Button
                 variant="primary"
                 size="sm"
                 loading={isLoading}
                 disabled={(!hasClip && !transcriptText.trim()) || isRecording || clipTooShort}
                 onClick={handleAnalyzeCustom}
-                className="w-full"
+                className="whitespace-nowrap shrink-0"
               >
                 {clipTooShort
                   ? `Clip < ${MIN_ALETHEIA_SECONDS.toFixed(0)}s`
@@ -347,7 +478,14 @@ export const ClipBar: React.FC<ClipBarProps> = ({
                   Clear clip
                 </button>
               </div>
-              <audio controls src={activePreviewUrl} className="w-full h-9" />
+              <audio
+                controls
+                src={activePreviewUrl}
+                onPlay={startPlaybackTelemetry}
+                onPause={stopPlaybackTelemetry}
+                onEnded={stopPlaybackTelemetry}
+                className="w-full h-9"
+              />
             </div>
           )}
 

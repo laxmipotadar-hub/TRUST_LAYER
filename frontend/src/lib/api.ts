@@ -204,12 +204,14 @@ export const aegisApi = {
   async postCallAction(
     callId: string,
     action: string,
-    operatorNote = ""
+    operatorNote = "",
+    signal?: AbortSignal
   ): Promise<{ call_id: string; updated_status: string }> {
     return fetchJson(`/calls/${encodeURIComponent(callId)}/action`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, operator_note: operatorNote }),
+      signal,
     });
   },
 

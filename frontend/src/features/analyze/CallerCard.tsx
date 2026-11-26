@@ -7,24 +7,27 @@ import { copy } from "../../copy";
 import { aegisApi } from "../../lib/api";
 import { useAnalysis } from "../../context/AnalysisContext";
 import { formatSimilarity } from "../../lib/format";
+import { formatEidosReason, formatEidosSkippedTitle } from "./eidosStatus";
 import type { CallSession, ExecutionMode, VoiceprintRecord } from "../../types";
 
 export interface CallerCardProps {
   call: CallSession | null;
   voiceprints: VoiceprintRecord[];
+  selectedCustomerId?: string;
   executionMode?: ExecutionMode;
 }
 
 export const CallerCard: React.FC<CallerCardProps> = ({
   call,
   voiceprints,
+  selectedCustomerId,
   executionMode,
 }) => {
   const { refreshVoiceprints, showToast } = useAnalysis();
   const [resyncing, setResyncing] = useState(false);
   const identity = call?.speaker_identity;
   const profile = call?.caller_profile;
-  const activeCustomerId = identity?.claimed_customer_id || call?.claimed_customer_id;
+  const activeCustomerId = identity?.claimed_customer_id || call?.claimed_customer_id || selectedCustomerId;
   const activeVps = voiceprints.filter(
     (vp) => vp.customer_id === activeCustomerId && vp.status === "ACTIVE"
   );
@@ -67,6 +70,7 @@ export const CallerCard: React.FC<CallerCardProps> = ({
       setResyncing(false);
     }
   };
+  const isEidosSkipped = Boolean(identity && String(identity.status || "").toLowerCase() === "skipped");
   const isNoLiveVoiceId = identity?.skip_reason === "no_voice_id";
 
   // In LIVE mode, ONLY treat real Eidos enrollments as Enrolled; seeded demo records show Demo Only
@@ -78,10 +82,14 @@ export const CallerCard: React.FC<CallerCardProps> = ({
 
   const isDemoSeedOnly = isLive && Boolean(matchedVp) && !hasRealLiveSpeakerId;
 
-  const similarityDisplay = isNoLiveVoiceId
-    ? "Skipped — No live Voice ID"
+  const similarityDisplay = isEidosSkipped
+    ? formatEidosSkippedTitle(identity)
+    : identity?.status === "error"
+    ? formatEidosReason(identity)
     : identity && identity.match_confidence !== null && identity.match_confidence !== undefined
     ? formatSimilarity(identity.match_confidence)
+    : isLive && !hasRealLiveSpeakerId
+    ? "Skipped — No live Voice ID"
     : copy.states.unavailable;
 
   return (
@@ -96,8 +104,8 @@ export const CallerCard: React.FC<CallerCardProps> = ({
           <span className="text-[var(--text-muted)]">{copy.callerCard.claimedIdentity}</span>
           <span className="font-semibold text-[var(--text-primary)] text-right truncate">
             {profile?.claimed_name ||
-              identity?.claimed_customer_id ||
-              call?.claimed_customer_id ||
+              matchedVp?.customer_name ||
+              activeCustomerId ||
               copy.states.unavailable}
           </span>
         </div>
@@ -105,9 +113,7 @@ export const CallerCard: React.FC<CallerCardProps> = ({
         <div className="flex items-center justify-between gap-2">
           <span className="text-[var(--text-muted)]">customer_id</span>
           <span className="font-mono text-[var(--text-primary)] truncate">
-            {identity?.claimed_customer_id ||
-              call?.claimed_customer_id ||
-              copy.states.unavailable}
+            {activeCustomerId || copy.states.unavailable}
           </span>
         </div>
 
@@ -147,7 +153,7 @@ export const CallerCard: React.FC<CallerCardProps> = ({
             <Badge variant="warning" size="sm">
               <span className="inline-flex items-center gap-1">
                 <ShieldAlert className="w-3.5 h-3.5" />
-                {isDemoSeedOnly ? "Demo Only (Not Live Enrolled)" : copy.callerCard.notEnrolled}
+                {isDemoSeedOnly || (matchedVp && !hasRealLiveSpeakerId) ? "Demo Only" : copy.callerCard.notEnrolled}
               </span>
             </Badge>
           )}
@@ -156,7 +162,13 @@ export const CallerCard: React.FC<CallerCardProps> = ({
         {isLive && !enrolled && (
           <div className="pt-1 flex flex-wrap items-center justify-between gap-2">
             <Link
-              to="/enroll"
+              to={
+                activeCustomerId && activeCustomerId !== "UNENROLLED-CALLER"
+                  ? `/enroll?customer_id=${encodeURIComponent(activeCustomerId)}${
+                      matchedVp?.customer_name ? `&customer_name=${encodeURIComponent(matchedVp.customer_name)}` : ""
+                    }`
+                  : "/enroll"
+              }
               className="text-[14px] font-semibold text-[var(--brand-steel)] hover:underline"
             >
               Enroll a live Voice ID &rarr;

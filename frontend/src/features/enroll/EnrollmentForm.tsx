@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { CheckCircle2, AlertCircle } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
@@ -18,9 +19,10 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
   onSuccess,
   onNavigateList,
 }) => {
+  const [searchParams] = useSearchParams();
   const { executionMode, refreshVoiceprints, refreshSystem } = useAnalysis();
-  const [customerId, setCustomerId] = useState("");
-  const [customerName, setCustomerName] = useState("");
+  const [customerId, setCustomerId] = useState(() => searchParams.get("customer_id") || "");
+  const [customerName, setCustomerName] = useState(() => searchParams.get("customer_name") || "");
   const [accountTier, setAccountTier] = useState("Private Banking");
   const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [primarySample, setPrimarySample] = useState<SampleValue | null>(null);

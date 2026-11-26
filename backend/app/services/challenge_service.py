@@ -193,10 +193,10 @@ async def verify_challenge_response(
                             eidos_ok = False
                             eidos_state = "mismatch"
                         eidos_detail = eid.result.detail
-                    elif eid.model_status == "UNENROLLED":
+                    elif eid.model_status in ("UNENROLLED", "SKIPPED"):
                         eidos_ok = True
-                        eidos_state = "unenrolled"
-                        eidos_detail = "Customer unenrolled; Eidos neutral baseline applied."
+                        eidos_state = "skipped" if eid.model_status == "SKIPPED" else "unenrolled"
+                        eidos_detail = eid.result.detail or "Eidos verification skipped for short challenge clip."
                     else:
                         eidos_ok = False
                         eidos_state = "unavailable"

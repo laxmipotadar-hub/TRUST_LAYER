@@ -63,9 +63,14 @@ def _to_decision(verdict: TrustVerdict) -> CallDecision:
 def _normalize_weights(custom: dict[str, float] | None) -> dict[str, float]:
     base = dict(LAYER_WEIGHTS)
     if custom:
+        remapped = dict(custom)
+        if "scam_safety" not in remapped and "scam_intent" in remapped:
+            remapped["scam_safety"] = remapped["scam_intent"]
+        if "behavioral_safety" not in remapped and "behavioral_pressure" in remapped:
+            remapped["behavioral_safety"] = remapped["behavioral_pressure"]
         for k in base:
-            if k in custom and custom[k] >= 0:
-                base[k] = float(custom[k])
+            if k in remapped and remapped[k] >= 0:
+                base[k] = float(remapped[k])
     total = sum(base.values())
     if total <= 0:
         return dict(LAYER_WEIGHTS)
@@ -410,7 +415,21 @@ def calculate_trust_score(
         if liveness_evidence:
             drivers.extend(liveness_evidence)
 
-    # Gate decisions cleanly when Eidos was skipped
+    missing_layers: list[str] = []
+    if s_score is None and not (eidos_skipped and eidos_skip_reason == "aletheia_fake"):
+        missing_layers.append("Layer 2 Eidos")
+    if scam_safety is None:
+        missing_layers.append("Layer 3 Script")
+    if behavioral_safety is None:
+        missing_layers.append("Layer 4 Manipulation")
+
+    partial_label: str | None = (
+        f"Partial score (layer {', '.join(missing_layers)} unavailable)"
+        if missing_layers
+        else None
+    )
+
+    # Gate decisions cleanly when Eidos was skipped or layers are unavailable
     mapped_decision = _to_decision(final_decision)
     if eidos_skipped and eidos_skip_reason == "aletheia_fake":
         final_decision = "THREAT"
@@ -419,18 +438,35 @@ def calculate_trust_score(
         action = decision_reason
         if not drivers:
             drivers.append(decision_reason)
-    elif eidos_skipped and eidos_skip_reason == "no_voice_id":
+    elif eidos_skipped and eidos_skip_reason in ("no_voice_id", "clip_too_short", "insufficient_credits"):
         if final_decision == "SAFE":
             final_decision = "CAUTION"
+        if eidos_skip_reason == "clip_too_short":
+            reason_line = "Clip too short for speaker verification (need >= 10 s of speech) — Eidos skipped."
+        elif eidos_skip_reason == "insufficient_credits":
+            reason_line = "Insufficient credits for Eidos verification — capped at STEP_UP."
+        else:
+            reason_line = "No live Voice ID — voice match unavailable. Enroll a live Voice ID first."
         if final_decision != "THREAT":
             mapped_decision = "STEP_UP"
-            decision_reason = "Voice match unavailable. Enroll a live Voice ID first."
+            decision_reason = reason_line
             action = decision_reason
         else:
             mapped_decision = "END_CALL"
-            decision_reason = "High risk detected without enrolled Voice ID."
+            decision_reason = "High risk detected while Eidos verification was skipped."
             action = decision_reason
-        drivers.insert(0, "Eidos skipped: no live Voice ID enrolled")
+        if partial_label:
+            policy_override = partial_label if not policy_override else f"{policy_override} | {partial_label}"
+        drivers.insert(0, reason_line)
+    elif partial_label:
+        # Never reach SAFE / ALLOW (Continue) on a partial score — cap at STEP_UP
+        if final_decision == "SAFE":
+            final_decision = "CAUTION"
+            mapped_decision = "STEP_UP"
+        policy_override = partial_label if not policy_override else f"{policy_override} | {partial_label}"
+        decision_reason = f"{partial_label} — capped at STEP_UP until all layers complete."
+        action = decision_reason
+        drivers.insert(0, partial_label)
     # Groq analysis may ONLY tighten a SAFE/ALLOW decision (cap CONTINUE at STEP_UP); never softens a fake verdict
     elif final_decision == "SAFE" and (
         (clamped_scam_risk is not None and clamped_scam_risk >= 45.0)

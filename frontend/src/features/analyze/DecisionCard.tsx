@@ -83,11 +83,11 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({
         <ModeBadge mode={mode} />
       </div>
 
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-start sm:items-center gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-start sm:items-center gap-4 min-w-0 flex-1 basis-[240px]">
           {config.icon}
-          <div>
-            <h1 className={`text-[32px] sm:text-[36px] font-extrabold tracking-tight leading-none ${config.headlineColor}`}>
+          <div className="min-w-0">
+            <h1 className={`text-[30px] sm:text-[34px] font-extrabold tracking-tight leading-none ${config.headlineColor}`}>
               {config.headline}
             </h1>
             <p className="text-[16px] font-medium text-[var(--text-primary)] mt-1">
@@ -101,7 +101,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({
           size="md"
           onClick={onPrimaryAction}
           icon={<ArrowRight className="w-4 h-4" />}
-          className="shrink-0"
+          className="shrink-0 whitespace-nowrap"
         >
           {config.ctaLabel}
         </Button>

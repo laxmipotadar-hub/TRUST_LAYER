@@ -1,4 +1,5 @@
 export type AppMode = "DEMO" | "REAL";
+export type ScenarioId = "S1" | "S2" | "S3" | "S4";
 export type ExecutionMode = "LIVE" | "DEMO" | "CACHED";
 export type AnalysisMode = "REAL" | "CACHED" | "SIMULATION";
 export type AnalysisProvenance = "REAL ANALYSIS" | "CACHED ANALYSIS" | "SIMULATION";

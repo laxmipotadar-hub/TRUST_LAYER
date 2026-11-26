@@ -12,6 +12,17 @@ import { aegisApi } from "../../lib/api";
 import { formatDate } from "../../lib/format";
 import type { ApiError, VoiceprintRecord } from "../../types";
 
+export type VoiceprintCapability = "LIVE" | "DEMO" | "NO_VOICE_ID";
+
+export function getVoiceprintCapability(vp: VoiceprintRecord): VoiceprintCapability {
+  const sid = (vp.provider_speaker_id || vp.provider_speaker_ref || "").trim();
+  if (!sid) return "NO_VOICE_ID";
+  if (sid.startsWith("sim-") || sid.startsWith("eidos-ref-") || vp.enrollment_source === "CACHED ANALYSIS") {
+    return "DEMO";
+  }
+  return vp.status === "ACTIVE" ? "LIVE" : "NO_VOICE_ID";
+}
+
 export interface VoiceprintListProps {
   onNavigateEnroll: () => void;
   onVoiceprintRevoked: () => void;
@@ -162,7 +173,17 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border)] text-[var(--text-primary)]">
-                {filtered.map((vp) => (
+                {filtered.map((vp) => {
+                  const capability = getVoiceprintCapability(vp);
+                  const latestHistory = vp.verification_history?.[0];
+                  const statusReason =
+                    latestHistory?.notes ||
+                    (capability === "DEMO"
+                      ? "Simulation or demo-only voiceprint (not verified against DetectifAI Eidos)."
+                      : capability === "NO_VOICE_ID"
+                      ? "Missing DetectifAI provider_speaker_id — click Re-sync from provider or re-enroll."
+                      : "Verified against DetectifAI Eidos live speaker profile.");
+                  return (
                   <tr key={vp.voiceprint_id} className="hover:bg-[var(--fill-subtle)]">
                     <td className="py-3 px-4">
                       <p className="font-semibold">{vp.customer_name}</p>
@@ -176,15 +197,44 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
                     </td>
                     <td className="py-3 px-4">{formatDate(vp.enrolled_at)}</td>
                     <td className="py-3 px-4">
-                      <p>{vp.last_verification_status} ({vp.verification_count} checks)</p>
+                      <p
+                        title={statusReason}
+                        className="inline-flex items-center gap-1 cursor-help underline decoration-dotted underline-offset-2"
+                      >
+                        {vp.last_verification_status} ({vp.verification_count} checks)
+                      </p>
                       {vp.last_verified_at && (
                         <p className="text-[var(--text-muted)]">{formatDate(vp.last_verified_at)}</p>
                       )}
                     </td>
                     <td className="py-3 px-4">
-                      <Badge variant={vp.status === "ACTIVE" ? "success" : "danger"} size="sm">
-                        {vp.status}
-                      </Badge>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <Badge
+                          variant={
+                            capability === "LIVE"
+                              ? "success"
+                              : capability === "DEMO"
+                              ? "warning"
+                              : "danger"
+                          }
+                          size="sm"
+                        >
+                          {capability === "LIVE"
+                            ? "Live"
+                            : capability === "DEMO"
+                            ? "Demo"
+                            : "No Voice ID"}
+                        </Badge>
+                        {vp.status === "REVOKED" ? (
+                          <Badge variant="danger" size="sm">REVOKED</Badge>
+                        ) : capability === "LIVE" ? (
+                          <Badge variant="success" size="sm">LIVE ACTIVE</Badge>
+                        ) : capability === "DEMO" ? (
+                          <Badge variant="neutral" size="sm">DEMO PLACEHOLDER</Badge>
+                        ) : (
+                          <Badge variant="danger" size="sm">MISSING ID</Badge>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-4 text-right space-x-2">
                       {vp.status === "ACTIVE" && (
@@ -215,7 +265,8 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
                       </Button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

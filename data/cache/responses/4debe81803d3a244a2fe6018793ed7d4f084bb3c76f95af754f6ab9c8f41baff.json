@@ -1,7 +1,7 @@
 {
   "cache_key": "4debe81803d3a244a2fe6018793ed7d4f084bb3c76f95af754f6ab9c8f41baff",
   "provider": "groq_content",
-  "cached_at": "2026-11-26T01:42:38.879995+00:00",
+  "cached_at": "2026-11-26T02:36:00.358775+00:00",
   "cache_hit": false,
   "payload": {
     "transcript": "Read back your 6-digit OTP code immediately.",
@@ -42,14 +42,14 @@
       ],
       "engine_used": "Groq Whisper + LLM",
       "model_version": "openai/gpt-oss-120b",
-      "latency_ms": 766.57,
+      "latency_ms": 1947.28,
       "provenance": "REAL ANALYSIS",
       "summary": "The caller pressures the user to disclose a one-time password immediately.",
       "recommended_action": "Require out-of-band verification.",
       "fallback_used": false,
       "fallback_reason": null,
       "cache_hit": false,
-      "operation_id": "op_groq_llm_4a2607bf",
+      "operation_id": "op_groq_llm_99b50208",
       "cost_credits": 0.0,
       "raw_payload": {
         "model": "openai/gpt-oss-120b",
@@ -75,7 +75,7 @@
       "safety_score": 50.0,
       "status": "WARN",
       "model_version": "openai/gpt-oss-120b",
-      "latency_ms": 766.57,
+      "latency_ms": 1947.28,
       "category_counts": {
         "urgency": 1,
         "secrecy": 1,

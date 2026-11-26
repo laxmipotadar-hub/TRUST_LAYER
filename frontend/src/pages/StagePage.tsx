@@ -7,6 +7,7 @@ import { useAnalysis } from "../context/AnalysisContext";
 import { DEMO_SCENARIO_LIST } from "../mocks/fixtures";
 import { formatSimilarity, formatSyntheticLikelihood } from "../lib/format";
 import { ChallengeModal } from "../features/challenge/ChallengeModal";
+import { PhonePanel } from "../features/phone/PhonePanel";
 
 export const StagePage: React.FC = () => {
   const navigate = useNavigate();
@@ -19,6 +20,7 @@ export const StagePage: React.FC = () => {
     isLivenessModalOpen,
     setLivenessModalOpen,
     applyUpdatedCall,
+    phoneDispatch,
   } = useAnalysis();
 
   useEffect(() => {
@@ -97,7 +99,8 @@ export const StagePage: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col justify-center items-center text-center max-w-5xl mx-auto px-4 space-y-6">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-6 items-center max-w-6xl w-full mx-auto px-4 py-4">
+        <div className="flex flex-col justify-center items-center text-center space-y-6">
         {!currentCall ? (
           <div className="space-y-4">
             <p className="text-[36px] font-bold">{copy.stage.waitingForCall}</p>
@@ -154,6 +157,10 @@ export const StagePage: React.FC = () => {
             </div>
           </>
         )}
+        </div>
+        <div className="w-full max-w-[360px] mx-auto">
+          <PhonePanel stageEmbedded />
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-4 border-t border-white/25 pt-4 text-[16px] text-white/90 shrink-0">
@@ -161,7 +168,15 @@ export const StagePage: React.FC = () => {
         {currentCall?.decision === "STEP_UP" && (
           <button
             type="button"
-            onClick={() => setLivenessModalOpen(true)}
+            onClick={() => {
+              setLivenessModalOpen(true);
+              phoneDispatch({
+                type: "START_CHALLENGE",
+                actor: "operator",
+                phrase: "cobalt mango seven",
+                expiresInSeconds: 20,
+              });
+            }}
             className="px-4 py-2 rounded-lg bg-white text-[var(--brand-navy)] font-bold cursor-pointer"
           >
             {copy.decisions.stepUp.actionLabel}
@@ -175,7 +190,14 @@ export const StagePage: React.FC = () => {
         customerId={currentCall?.claimed_customer_id}
         executionMode={executionMode}
         onClose={() => setLivenessModalOpen(false)}
-        onComplete={(_resp, updatedCall) => {
+        onComplete={(resp, updatedCall) => {
+          phoneDispatch({
+            type: "CHALLENGE_RESULT",
+            actor: "system",
+            passed: resp.passed,
+            incomplete: resp.liveness_status === "INCOMPLETE",
+            note: resp.explanation,
+          });
           if (updatedCall) applyUpdatedCall(updatedCall);
         }}
       />

@@ -234,7 +234,7 @@ export async function startAudioWorkletCapture(options: {
   const source = ctx.createMediaStreamSource(stream);
 
   const rawFrames: Float32Array[] = [];
-  let pendingFloat: number[] = [];
+  const pendingFloat: number[] = [];
   const sampleRateIn = ctx.sampleRate;
   const chunkTargetSamples = TARGET_SAMPLE_RATE; // emit every ~1s of 16 kHz PCM
   let cleanupNode: () => void = () => {};

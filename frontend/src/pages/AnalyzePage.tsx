@@ -12,6 +12,7 @@ import { BotGuardPanel } from "../features/botguard/BotGuardPanel";
 import { AlertsTimelineCard } from "../features/analyze/AlertsTimelineCard";
 import { TechnicalDetailsDrawer } from "../features/analyze/TechnicalDetailsDrawer";
 import { ChallengeModal } from "../features/challenge/ChallengeModal";
+import { PhonePanel } from "../features/phone/PhonePanel";
 import { ErrorState } from "../components/ui/ErrorState";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Card } from "../components/ui/Card";
@@ -22,8 +23,16 @@ export const AnalyzePage: React.FC = () => {
     executionMode,
     currentCall,
     voiceprints,
+    selectedCustomerId,
+    setSelectedCustomerId,
     activeScenarioId,
     layerStatuses,
+    pipelinePhoneStages,
+    phoneState,
+    phoneDispatch,
+    setPhoneAudioLevel,
+    operatorActionStatus,
+    operatorActionReason,
     isLoading,
     error,
     isLivenessModalOpen,
@@ -48,10 +57,40 @@ export const AnalyzePage: React.FC = () => {
     resetError,
   } = useAnalysis();
 
+  const mergedTimelineEvents = React.useMemo(() => {
+    const base = currentCall?.evidence_timeline || [];
+    const phoneMapped = phoneState.eventLog.slice(0, 12).map((evt, idx) => ({
+      id: `phone-evt-${evt.id}-${idx}`,
+      timestamp_sec: idx,
+      category:
+        evt.toState === "challenge_pending" || evt.toState === "challenge_recording"
+          ? ("LIVENESS" as const)
+          : ("POLICY" as const),
+      title: `Phone: ${evt.event}`,
+      description: `${evt.detail} (${evt.fromState} → ${evt.toState})`,
+      severity:
+        evt.toState === "ended" && phoneState.endReason === "security_end"
+          ? ("CRITICAL" as const)
+          : evt.toState === "challenge_pending" || evt.toState === "on_hold"
+          ? ("WARNING" as const)
+          : ("INFO" as const),
+      provenance: (phoneState.isDemo ? "SIMULATION" : "REAL ANALYSIS") as
+        | "SIMULATION"
+        | "REAL ANALYSIS",
+    }));
+    return [...base, ...phoneMapped];
+  }, [currentCall?.evidence_timeline, phoneState.eventLog, phoneState.endReason, phoneState.isDemo]);
+
   const handlePrimaryDecisionAction = () => {
     if (!currentCall) return;
     if (currentCall.decision === "STEP_UP" || currentCall.decision === "INCOMPLETE ANALYSIS") {
       setLivenessModalOpen(true);
+      phoneDispatch({
+        type: "START_CHALLENGE",
+        actor: "operator",
+        phrase: "cobalt mango seven",
+        expiresInSeconds: 20,
+      });
     } else if (currentCall.decision === "ALLOW") {
       void executeCallAction("ALLOW", "Operator confirmed ALLOW action");
     } else {
@@ -60,15 +99,19 @@ export const AnalyzePage: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 items-start">
+    <div className="flex flex-col min-[1600px]:flex-row gap-4 items-start w-full min-w-0">
+      <div className="flex-1 min-w-0 w-full flex flex-col lg:flex-row gap-4 items-start">
       <div className="flex-1 min-w-0 w-full space-y-3">
         <ClipBar
           executionMode={executionMode}
           activeScenarioId={activeScenarioId}
           voiceprints={voiceprints}
+          selectedCustomerId={selectedCustomerId}
+          onSelectCustomerId={setSelectedCustomerId}
           isLoading={isLoading}
           onSelectScenario={runScenario}
           onClearSession={clearCurrentCall}
+          onAudioLevelChange={setPhoneAudioLevel}
           onAnalyzeAudio={analyzeLiveAudio}
         />
 
@@ -84,7 +127,14 @@ export const AnalyzePage: React.FC = () => {
           />
         )}
 
-        <PipelineStrip call={currentCall} layerStatuses={layerStatuses} isLoading={isLoading} />
+        <PipelineStrip
+          call={currentCall}
+          layerStatuses={layerStatuses}
+          isLoading={isLoading}
+          phoneStages={pipelinePhoneStages}
+          operatorActionStatus={operatorActionStatus}
+          operatorActionReason={operatorActionReason}
+        />
 
         {isLoading ? (
           <Card className="!p-5 space-y-3">
@@ -133,13 +183,27 @@ export const AnalyzePage: React.FC = () => {
         />
       </div>
 
-      <aside className="w-full lg:w-[320px] shrink-0 space-y-3">
-        <CallerCard call={currentCall} voiceprints={voiceprints} executionMode={executionMode} />
+      <aside className="w-full lg:w-[290px] xl:w-[320px] shrink-0 space-y-3">
+        <CallerCard
+          call={currentCall}
+          voiceprints={voiceprints}
+          selectedCustomerId={selectedCustomerId}
+          executionMode={executionMode}
+        />
 
         <OperatorActionsCard
-          decision={currentCall?.decision}
+          decision={currentCall?.decision || phoneState.decision || undefined}
           guardState={guardState}
-          disabled={isLoading || !currentCall}
+          actionStatus={operatorActionStatus}
+          actionReason={operatorActionReason}
+          hasActiveSession={
+            Boolean(currentCall) ||
+            (phoneState.callState !== "idle" && phoneState.callState !== "ended")
+          }
+          disabled={
+            isLoading ||
+            (!currentCall && (phoneState.callState === "idle" || phoneState.callState === "ended"))
+          }
           onAction={(act, note) => void executeCallAction(act, note)}
         />
 
@@ -157,7 +221,7 @@ export const AnalyzePage: React.FC = () => {
         />
 
         <AlertsTimelineCard
-          events={currentCall?.evidence_timeline || []}
+          events={mergedTimelineEvents}
           executionMode={executionMode}
         />
       </aside>
@@ -175,10 +239,19 @@ export const AnalyzePage: React.FC = () => {
         customerId={currentCall?.claimed_customer_id}
         executionMode={executionMode}
         onClose={() => setLivenessModalOpen(false)}
-        onComplete={(_resp, updatedCall) => {
+        onComplete={(resp, updatedCall) => {
+          phoneDispatch({
+            type: "CHALLENGE_RESULT",
+            actor: "system",
+            passed: resp.passed,
+            incomplete: resp.liveness_status === "INCOMPLETE",
+            note: resp.explanation,
+          });
           if (updatedCall) applyUpdatedCall(updatedCall);
         }}
       />
+      </div>
+      <PhonePanel />
     </div>
   );
 };

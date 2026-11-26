@@ -3,19 +3,33 @@ import { ArrowRight } from "lucide-react";
 import { StatusChip } from "../../components/ui/StatusChip";
 import type { CallSession } from "../../types";
 import type { LayerStatuses } from "../../context/AnalysisContext";
+import type { PipelinePhoneStageStatuses } from "../phone/phoneStateMachine";
 
 export interface PipelineStripProps {
   call: CallSession | null;
   layerStatuses: LayerStatuses;
   isLoading: boolean;
+  phoneStages?: PipelinePhoneStageStatuses;
+  operatorActionStatus?: "idle" | "running" | "done" | "error" | "timeout";
+  operatorActionReason?: string | null;
 }
 
 export const PipelineStrip: React.FC<PipelineStripProps> = ({
   call,
   layerStatuses,
   isLoading,
+  phoneStages,
+  operatorActionStatus = "idle",
+  operatorActionReason = null,
 }) => {
-  const audioSt = isLoading ? "done" : call ? "done" : "queued";
+  const audioSt =
+    phoneStages && phoneStages.audioInput !== "queued"
+      ? phoneStages.audioInput
+      : isLoading
+      ? "done"
+      : call
+      ? "done"
+      : "queued";
   const transcriptSt = layerStatuses.asr;
   const fusionSt = isLoading
     ? "queued"
@@ -25,7 +39,25 @@ export const PipelineStrip: React.FC<PipelineStripProps> = ({
     ? "error"
     : "done";
   const decisionSt = isLoading ? "queued" : call ? "done" : "queued";
-  const actionsSt = call && call.actions_taken.length > 0 ? "done" : call ? "pending" : "queued";
+  const livenessSt = phoneStages ? phoneStages.liveness : "skipped";
+  const actionsSt =
+    operatorActionStatus === "running"
+      ? "running"
+      : operatorActionStatus === "timeout" || operatorActionStatus === "error"
+      ? "error"
+      : operatorActionStatus === "done" || (call && call.actions_taken.length > 0)
+      ? "done"
+      : phoneStages && phoneStages.operator !== "queued"
+      ? phoneStages.operator
+      : call
+      ? "pending"
+      : "queued";
+  const actionsLabel =
+    operatorActionStatus === "timeout"
+      ? "Timed out (30s)"
+      : operatorActionStatus === "error"
+      ? "Error"
+      : undefined;
 
   return (
     <div className="px-4 py-3 bg-[var(--surface)] border border-[var(--border)] rounded-[12px] shadow-xs overflow-x-auto">
@@ -75,11 +107,26 @@ export const PipelineStrip: React.FC<PipelineStripProps> = ({
         </div>
         <ArrowRight className="w-4 h-4 text-[var(--text-muted)] shrink-0" />
 
+        {phoneStages && (
+          <>
+            <div className="flex items-center gap-1.5">
+              <span className="font-semibold text-[var(--text-primary)]">Liveness</span>
+              <StatusChip status={livenessSt} />
+            </div>
+            <ArrowRight className="w-4 h-4 text-[var(--text-muted)] shrink-0" />
+          </>
+        )}
+
         <div className="flex items-center gap-1.5">
           <span className="font-semibold text-[var(--text-primary)]">Operator Actions</span>
-          <StatusChip status={actionsSt} />
+          <StatusChip status={actionsSt} label={actionsLabel} />
         </div>
       </div>
+      {(operatorActionStatus === "timeout" || operatorActionStatus === "error") && operatorActionReason && (
+        <p className="mt-2 text-[13px] font-medium text-[var(--decision-endcall-text)]">
+          {operatorActionReason}
+        </p>
+      )}
     </div>
   );
 };

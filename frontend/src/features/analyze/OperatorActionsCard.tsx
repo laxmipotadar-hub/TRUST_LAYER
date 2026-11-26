@@ -11,6 +11,8 @@ export interface OperatorActionsCardProps {
   disabled: boolean;
   hasActiveSession?: boolean;
   isRecordingOrStreaming?: boolean;
+  actionStatus?: "idle" | "running" | "done" | "error" | "timeout";
+  actionReason?: string | null;
   onAction: (action: string, note: string) => void;
 }
 
@@ -20,6 +22,8 @@ export const OperatorActionsCard: React.FC<OperatorActionsCardProps> = ({
   disabled,
   hasActiveSession = true,
   isRecordingOrStreaming = false,
+  actionStatus = "idle",
+  actionReason = null,
   onAction,
 }) => {
   const allowEnabled = !disabled && hasActiveSession && decision === "ALLOW";
@@ -33,10 +37,26 @@ export const OperatorActionsCard: React.FC<OperatorActionsCardProps> = ({
 
   return (
     <Card className="!p-4 space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <h3 className="card-title">{copy.operatorActions.title}</h3>
-        <span className="caption-text font-mono text-[14px]">{guardState}</span>
+        <span className="caption-text font-mono text-[14px]">
+          {actionStatus === "running"
+            ? "RUNNING"
+            : actionStatus === "timeout"
+            ? "TIMED OUT"
+            : actionStatus === "error"
+            ? "ERROR"
+            : guardState}
+        </span>
       </div>
+      {(actionStatus === "timeout" || actionStatus === "error") && actionReason && (
+        <div
+          role="alert"
+          className="px-3 py-2 rounded-lg border border-[var(--decision-endcall-border)] bg-[var(--decision-endcall-tint)] text-[13px] font-medium text-[var(--decision-endcall-text)]"
+        >
+          {actionReason}
+        </div>
+      )}
 
       <div className="space-y-2">
         <div>

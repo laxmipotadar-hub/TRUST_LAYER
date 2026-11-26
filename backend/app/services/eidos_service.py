@@ -18,12 +18,14 @@ from app.detectif.client import (
 )
 from app.repositories.json_store import repo
 from app.schemas import SpeakerIdentityResult, VoiceprintRecord
+from app.services.aletheia_service import inspect_wav_duration_seconds
 from app.services.cache_service import cache_service
 from app.services.ledger_service import record_operation
 
 
 NEUTRAL_UNENROLLED_SCORE = 50.0
 EIDOS_VERIFY_COST_CREDITS = 500.0
+MIN_EIDOS_SPEECH_SECONDS = 10.0
 
 
 @dataclass
@@ -250,12 +252,32 @@ async def delete_speaker_eidos(speaker_id: str) -> tuple[bool, str]:
         return False, f"Eidos delete network error: {exc.__class__.__name__}"
 
 
+async def fetch_credits_balance_eidos() -> float | None:
+    """Return available DetectifAI credits via GET /v1/credits, or None if unavailable."""
+    if not settings.detectifai_configured:
+        return None
+    url = f"{settings.detectif_api_base_url.rstrip('/')}/v1/credits"
+    headers = {"Authorization": f"Bearer {settings.detectif_api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                return None
+            body = resp.json()
+            if isinstance(body, dict) and body.get("available") is not None:
+                return float(body["available"])
+    except Exception:
+        return None
+    return None
+
+
 async def verify_speaker_eidos(
     audio_bytes: bytes | None,
     claimed_customer_id: str,
     filename: str = "verify.wav",
     bypass_cache: bool = False,
     call_id: str | None = None,
+    duration_hint_sec: float | None = None,
 ) -> EidosVerifyEvaluation:
     """Isolated DetectifAI Eidos verification via POST /v1/speakers/verify."""
     enrolled_vp = repo.get_voiceprint_by_customer(claimed_customer_id)
@@ -325,10 +347,37 @@ async def verify_speaker_eidos(
                 status="skipped",
                 provenance="REAL ANALYSIS",
                 detail=(
-                    f"Skipped: customer '{claimed_customer_id}' has no live provider_speaker_id "
+                    f"No live Voice ID: customer '{claimed_customer_id}' has no live provider_speaker_id "
                     f"(provider_speaker_id={enrolled_vp.provider_speaker_id!r}, "
                     f"ref={enrolled_vp.provider_speaker_ref!r}, "
                     f"source={enrolled_vp.enrollment_source!r})."
+                ),
+                cost_credits=0.0,
+            ),
+            model_status="SKIPPED",
+        )
+
+    # Guard 1: Clip speech duration must be >= 10s before calling Eidos (0 credits)
+    wav_dur = inspect_wav_duration_seconds(audio_bytes)
+    durations = [d for d in (wav_dur, duration_hint_sec) if d is not None and d > 0]
+    effective_duration = min(durations) if durations else None
+    if effective_duration is not None and effective_duration < MIN_EIDOS_SPEECH_SECONDS:
+        return EidosVerifyEvaluation(
+            result=SpeakerIdentityResult(
+                score=None,
+                match_confidence=None,
+                claimed_customer_id=claimed_customer_id,
+                matched_customer_name=None,
+                provider_speaker_id=raw_provider_sid,
+                decision="SKIPPED",
+                enrolled=True,
+                skip_reason="clip_too_short",
+                similarity_tier="unavailable",
+                status="skipped",
+                provenance="REAL ANALYSIS",
+                detail=(
+                    f"Clip too short for speaker verification: need >= {MIN_EIDOS_SPEECH_SECONDS:.0f} s "
+                    f"of speech (got {effective_duration:.1f}s); 0 credits spent."
                 ),
                 cost_credits=0.0,
             ),
@@ -358,6 +407,31 @@ async def verify_speaker_eidos(
                     cached=True,
                 )
             return EidosVerifyEvaluation(result=res_obj, model_status="CACHED")
+
+    # Guard 2: Credit pre-check before paid live Eidos verify (~500 credits)
+    available_credits = await fetch_credits_balance_eidos()
+    if available_credits is not None and available_credits < EIDOS_VERIFY_COST_CREDITS:
+        return EidosVerifyEvaluation(
+            result=SpeakerIdentityResult(
+                score=None,
+                match_confidence=None,
+                claimed_customer_id=claimed_customer_id,
+                matched_customer_name=None,
+                provider_speaker_id=speaker_ref,
+                decision="SKIPPED",
+                enrolled=True,
+                skip_reason="insufficient_credits",
+                similarity_tier="unavailable",
+                status="skipped",
+                provenance="REAL ANALYSIS",
+                detail=(
+                    f"Insufficient credits: need ~{int(EIDOS_VERIFY_COST_CREDITS)} "
+                    f"have {int(available_credits)}"
+                ),
+                cost_credits=0.0,
+            ),
+            model_status="SKIPPED",
+        )
 
     url = f"{settings.detectif_api_base_url.rstrip('/')}/v1/speakers/verify"
     headers = {

@@ -27,6 +27,7 @@ import { Banner } from "../components/ui/Banner";
 import { ModeBadge } from "../components/ui/ModeBadge";
 import { ChallengeModal } from "../features/challenge/ChallengeModal";
 import { OperatorActionsCard } from "../features/analyze/OperatorActionsCard";
+import { PhonePanel } from "../features/phone/PhonePanel";
 import { useAnalysis } from "../context/AnalysisContext";
 import { aegisApi, LiveCallSocketClient } from "../lib/api";
 import {
@@ -69,6 +70,8 @@ export const LiveDemoPage: React.FC = () => {
     credits: sharedCredits,
     voiceprints,
     guardState,
+    phoneDispatch,
+    setPhoneAudioLevel,
     refreshSystem,
     refreshVoiceprints,
     applyUpdatedCall,
@@ -195,6 +198,12 @@ export const LiveDemoPage: React.FC = () => {
 
     if (normalizedAction === "CHALLENGE" || normalizedAction === "STEP_UP_CHALLENGE") {
       setChallengeOpen(true);
+      phoneDispatch({
+        type: "START_CHALLENGE",
+        actor: "operator",
+        phrase: "cobalt mango seven",
+        expiresInSeconds: 20,
+      });
     }
 
     if (targetCall) {
@@ -216,7 +225,19 @@ export const LiveDemoPage: React.FC = () => {
             : null
         );
       }
+    } else if (normalizedAction === "ALLOW") {
+      phoneDispatch({ type: "OPERATOR_CONTINUE", actor: "operator", note });
+    } else if (normalizedAction === "PAUSE_BOT") {
+      phoneDispatch({ type: "OPERATOR_PAUSE_BOT", actor: "operator", note });
+    } else if (normalizedAction === "TRANSFER_TO_HUMAN") {
+      phoneDispatch({ type: "OPERATOR_TRANSFER_HUMAN", actor: "operator", note });
     } else if (normalizedAction === "TERMINATE_CALL" || normalizedAction === "BLOCK_CALL") {
+      phoneDispatch({
+        type: "OPERATOR_END_CALL",
+        actor: "operator",
+        securityEnd: normalizedAction === "BLOCK_CALL",
+        note,
+      });
       showToast({
         variant: "error",
         title: "Call Ended (END_CALL)",
@@ -271,6 +292,7 @@ export const LiveDemoPage: React.FC = () => {
       setProbingMic(true);
       await helper.start((lvl) => {
         setMicLevel(lvl);
+        setPhoneAudioLevel(lvl);
         if (lvl > 3) setMicReady(true);
       });
       setMicReady(true);
@@ -388,7 +410,10 @@ export const LiveDemoPage: React.FC = () => {
 
     try {
       const ctrl = await startAudioWorkletCapture({
-        onLevel: (lvl) => setMicLevel(lvl),
+        onLevel: (lvl) => {
+          setMicLevel(lvl);
+          setPhoneAudioLevel(lvl);
+        },
         onChunk: (pcm, _lvl, bars) => {
           if (bars.length > 0) setWaveform(bars);
           client.sendJson({
@@ -611,7 +636,10 @@ export const LiveDemoPage: React.FC = () => {
 
     try {
       const ctrl = await startAudioWorkletCapture({
-        onLevel: (lvl) => setMicLevel(lvl),
+        onLevel: (lvl) => {
+          setMicLevel(lvl);
+          setPhoneAudioLevel(lvl);
+        },
         onChunk: (pcm, _lvl, bars) => {
           if (bars.length > 0) setWaveform(bars);
           client.sendJson({
@@ -668,7 +696,8 @@ export const LiveDemoPage: React.FC = () => {
   const effectiveDecision = sessionEndedLocally ? "END_CALL" : activeFusion?.decision;
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 items-start">
+    <div className="flex flex-col min-[1600px]:flex-row gap-4 items-start w-full min-w-0">
+      <div className="flex-1 min-w-0 w-full flex flex-col lg:flex-row gap-4 items-start">
       <div className="flex-1 min-w-0 w-full space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -716,13 +745,13 @@ export const LiveDemoPage: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--border)] text-[14px]">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 min-w-0 w-full sm:w-auto">
               <span className="font-semibold text-[var(--text-secondary)]">Active Customer:</span>
               <select
                 aria-label="Live Demo customer picker"
                 value={presenterId}
                 onChange={(e) => handleSelectExistingCustomer(e.target.value)}
-                className="px-2.5 py-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[14px]"
+                className="min-w-0 max-w-full px-2.5 py-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[14px]"
               >
                 {voiceprints
                   .filter((vp) => vp.status === "ACTIVE")
@@ -1280,6 +1309,13 @@ export const LiveDemoPage: React.FC = () => {
               customerId={enrolledVp?.customer_id || presenterId}
               executionMode="LIVE"
               onComplete={(resp, updated) => {
+                phoneDispatch({
+                  type: "CHALLENGE_RESULT",
+                  actor: "system",
+                  passed: resp.passed,
+                  incomplete: resp.liveness_status === "INCOMPLETE",
+                  note: resp.explanation,
+                });
                 if (updated) {
                   setFusionCall(updated);
                   applyUpdatedCall(updated);
@@ -1467,6 +1503,8 @@ export const LiveDemoPage: React.FC = () => {
           )}
         </Card>
       </aside>
+      </div>
+      <PhonePanel />
     </div>
   );
 };

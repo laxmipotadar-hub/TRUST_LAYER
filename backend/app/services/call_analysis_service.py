@@ -343,6 +343,7 @@ async def analyze_call_unified(
             aletheia_status = "UNAVAILABLE"
 
         aletheia_is_fake = aletheia_status in ("OK", "CACHED") and voice.verdict == "fake"
+        aletheia_blocked_by_error = (audio_bytes is not None) and aletheia_status not in ("OK", "CACHED")
         enrolled_vp = repo.get_voiceprint_by_customer(claimed_customer_id)
 
         if aletheia_is_fake:
@@ -356,11 +357,27 @@ async def analyze_call_unified(
                 skip_reason="aletheia_fake",
                 status="skipped",
                 provenance=voice.provenance,
-                detail="Skipped — Eidos not needed, 1 call saved (Aletheia detected possible synthetic speech).",
+                detail="L1 flagged fake — Eidos not needed, 1 call saved (Aletheia detected possible synthetic speech).",
                 cost_credits=0.0,
             )
             eidos_status = "SKIPPED"
             credits_saved += EIDOS_VERIFY_COST_CREDITS
+        elif aletheia_blocked_by_error:
+            # Gate: do not spend Eidos credits when Layer 1 Aletheia failed/errored
+            identity = SpeakerIdentityResult(
+                score=None,
+                match_confidence=None,
+                claimed_customer_id=claimed_customer_id,
+                matched_customer_name=None,
+                enrolled=enrolled_vp is not None,
+                skip_reason="l1_error",
+                status="skipped",
+                decision="SKIPPED",
+                provenance=voice.provenance,
+                detail=f"Blocked by L1 error: {voice.detail or aletheia_status}",
+                cost_credits=0.0,
+            )
+            eidos_status = "SKIPPED"
         else:
             eidos_eval = await verify_speaker_eidos(
                 audio_bytes,
@@ -368,6 +385,7 @@ async def analyze_call_unified(
                 filename=filename,
                 bypass_cache=bypass_cache,
                 call_id=call_id,
+                duration_hint_sec=duration_hint_sec,
             )
             if execution_mode == "LIVE" and eidos_eval.model_status == "UNENROLLED":
                 identity = SpeakerIdentityResult(
@@ -383,8 +401,8 @@ async def analyze_call_unified(
                     status="skipped",
                     provenance="REAL ANALYSIS",
                     detail=(
-                        f"Skipped: customer '{claimed_customer_id}' has no active voiceprint record "
-                        f"in the local repository."
+                        f"No live Voice ID: customer '{claimed_customer_id}' has no active live voiceprint "
+                        f"record on DetectifAI Eidos."
                     ),
                     cost_credits=0.0,
                 )

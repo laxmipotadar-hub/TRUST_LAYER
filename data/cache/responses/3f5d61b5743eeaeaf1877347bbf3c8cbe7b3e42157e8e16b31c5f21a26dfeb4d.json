@@ -1,0 +1,53 @@
+{
+  "cache_key": "3f5d61b5743eeaeaf1877347bbf3c8cbe7b3e42157e8e16b31c5f21a26dfeb4d",
+  "provider": "eidos_verify",
+  "cached_at": "2026-11-26T03:02:21.832013+00:00",
+  "cache_hit": false,
+  "payload": {
+    "score": 100.0,
+    "match_confidence": 1.0,
+    "claimed_customer_id": "CUST-4821-MARCUS",
+    "matched_customer_name": "Marcus Vance",
+    "provider_speaker_id": "CUST-4821-MARCUS",
+    "decision": "MATCH",
+    "enrolled": true,
+    "skip_reason": null,
+    "similarity_tier": null,
+    "model_name": "DetectifAI Eidos",
+    "model_version": "eidos-v1",
+    "status": "PASS",
+    "provenance": "REAL ANALYSIS",
+    "detail": "DetectifAI Eidos decision=MATCH for speaker 'CUST-4821-MARCUS' (similarity 1.000, match 100.0%).",
+    "cache_hit": false,
+    "request_id": "req_08ab30e10c242a7987986772",
+    "operation_id": "op_eb6c625371e541d7a5e0a925bc52dd3d",
+    "cost_credits": 500.0,
+    "latency_ms": 2022.26,
+    "error_code": null,
+    "http_status": null,
+    "raw_payload": {
+      "request_id": "req_08ab30e10c242a7987986772",
+      "operation_id": "op_eb6c625371e541d7a5e0a925bc52dd3d",
+      "object": "speaker.verification",
+      "speaker_id": "CUST-4821-MARCUS",
+      "result": {
+        "decision": "match",
+        "similarity": 1.0,
+        "threshold": 0.53,
+        "similarity_semantics": "Higher means the two voices are more alike. Not a percentage.",
+        "duration_seconds": 20.733
+      },
+      "deepfake": null,
+      "model": {
+        "name": "eidos",
+        "version": "b2adcc85166a"
+      },
+      "credits": {
+        "charged": 500,
+        "balance": 2298
+      },
+      "latency_ms": 231.1,
+      "idempotent_replay": false
+    }
+  }
+}

@@ -52,7 +52,7 @@ def test_live_call_short_audio_rejected_as_invalid_in_real_mode() -> None:
 
 
 def test_live_call_real_mode_with_aletheia_eidos_groq_and_cache_hit() -> None:
-    wav_5s = _make_wav_bytes(5.2)
+    wav_5s = _make_wav_bytes(11.2)
 
     ale_resp = MagicMock(status_code=200)
     ale_resp.raise_for_status = MagicMock()

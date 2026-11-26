@@ -134,7 +134,7 @@ async def test_aletheia_error_handling_auth_ratelimit_timeout() -> None:
 
 @pytest.mark.anyio
 async def test_eidos_unenrolled_neutral_score_and_real_verify() -> None:
-    wav_5s = _make_wav_bytes(5.0)
+    wav_5s = _make_wav_bytes(11.0)
     # Unenrolled speaker gets neutral score 50.0
     unenrolled = await verify_speaker_eidos(wav_5s, "CUST-NONEXISTENT-999")
     assert unenrolled.model_status == "UNENROLLED"
@@ -283,7 +283,7 @@ def test_unified_analyze_endpoint_never_fakes_safe_on_real_failure() -> None:
     assert data["verdict"] == "INCOMPLETE ANALYSIS"
     assert data["trust_score"] is None
     assert data["model_status"]["aletheia"] == "UNAVAILABLE"
-    assert data["model_status"]["eidos"] == "UNAVAILABLE"
+    assert data["model_status"]["eidos"] in ("SKIPPED", "UNAVAILABLE")
 
 
 def test_demo_mode_scenarios_never_call_external_apis() -> None:

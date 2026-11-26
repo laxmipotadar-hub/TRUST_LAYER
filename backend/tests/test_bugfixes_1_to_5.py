@@ -103,6 +103,7 @@ def test_bug1_aletheia_fake_skips_eidos_and_sets_end_call() -> None:
 @pytest.mark.anyio
 async def test_bug2_eidos_http_errors_and_live_no_voice_id() -> None:
     wav_5s = _make_wav_bytes(5.0)
+    wav_11s = _make_wav_bytes(11.0)
 
     # Verify HTTPStatusError redacts API key and surfaces HTTP status + provider message
     for code, expected_fragment in [
@@ -152,7 +153,7 @@ async def test_bug2_eidos_http_errors_and_live_no_voice_id() -> None:
             patch.object(settings, "detectif_api_key", "dtf_test_key_hidden"),
             patch("app.services.eidos_service.httpx.AsyncClient", return_value=mock_eid),
         ):
-            res = await verify_speaker_eidos(wav_5s, "CUST-LIVE-BUG2", bypass_cache=True)
+            res = await verify_speaker_eidos(wav_11s, "CUST-LIVE-BUG2", bypass_cache=True)
             assert res.model_status == "AUTH_ERROR"
             assert res.result.status == "error"
             assert res.result.http_status == 403
@@ -193,7 +194,7 @@ async def test_bug2_eidos_http_errors_and_live_no_voice_id() -> None:
     assert eidos["similarity_tier"] == "unavailable"
     assert eidos["matched_customer_name"] is None
     assert data["decision"] == "STEP_UP"
-    assert data["decision_reason"] == "Voice match unavailable. Enroll a live Voice ID first."
+    assert data["decision_reason"] == "No live Voice ID — voice match unavailable. Enroll a live Voice ID first."
 
 
 def test_bug4_liveness_incomplete_vs_replay_copy() -> None:
@@ -271,6 +272,7 @@ def test_bug4_liveness_incomplete_vs_replay_copy() -> None:
     mc.post.side_effect = route_post
 
     ch3 = client.post("/api/challenge/start", json={"customer_id": live_cust_id}).json()
+    wav_11s = _make_wav_bytes(11.0)
     with (
         patch.object(settings, "detectif_api_key", "dtf_test_bug4"),
         patch("app.services.aletheia_service.httpx.AsyncClient", return_value=mc),
@@ -278,7 +280,7 @@ def test_bug4_liveness_incomplete_vs_replay_copy() -> None:
     ):
         r3 = client.post(
             "/api/challenge/verify-audio",
-            files={"file": ("replay.wav", wav_5s, "audio/wav")},
+            files={"file": ("replay.wav", wav_11s, "audio/wav")},
             data={
                 "challenge_id": ch3["challenge_id"],
                 "spoken_response": "wrong unrelated sentence",

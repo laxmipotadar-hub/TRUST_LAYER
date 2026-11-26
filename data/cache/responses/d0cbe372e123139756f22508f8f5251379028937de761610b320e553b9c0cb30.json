@@ -1,7 +1,7 @@
 {
   "cache_key": "d0cbe372e123139756f22508f8f5251379028937de761610b320e553b9c0cb30",
   "provider": "groq_content",
-  "cached_at": "2026-11-26T01:47:27.250746+00:00",
+  "cached_at": "2026-11-26T03:02:19.545504+00:00",
   "cache_hit": false,
   "payload": {
     "transcript": "Hello, my name is Mahi. I am calling to inform you that your bank account requires verification. Please do not share your OTP, PIN or password with anyone. If you receive a suspicious call, disconnect immediately and contact your bank using its official customer care number. Thank you.",
@@ -18,14 +18,14 @@
       "flagged_phrases": [],
       "engine_used": "Groq Whisper + LLM",
       "model_version": "openai/gpt-oss-120b",
-      "latency_ms": 1022.7,
+      "latency_ms": 1634.25,
       "provenance": "REAL ANALYSIS",
       "summary": "The call is a benign security advisory with no coercive tactics.",
       "recommended_action": "No elevated social-engineering risk detected.",
       "fallback_used": false,
       "fallback_reason": null,
       "cache_hit": false,
-      "operation_id": "op_groq_llm_e371b82c",
+      "operation_id": "op_groq_llm_225b59ef",
       "cost_credits": 0.0,
       "raw_payload": {
         "model": "openai/gpt-oss-120b",
@@ -42,7 +42,7 @@
       "safety_score": 100.0,
       "status": "PASS",
       "model_version": "openai/gpt-oss-120b",
-      "latency_ms": 1022.7,
+      "latency_ms": 1634.25,
       "category_counts": {
         "urgency": 0,
         "secrecy": 0,

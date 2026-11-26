@@ -155,6 +155,22 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
     await submitChallenge("LIVE_SPEECH_AUDIO", spokenTranscript || challengeData?.phrase || "", res.blob);
   };
 
+  const handleRetryChallenge = () => {
+    setErrorMsg(null);
+    setVerifyOutcome(null);
+    setSpokenTranscript("");
+    aegisApi
+      .startChallenge(callId, customerId)
+      .then((res) => {
+        setChallengeData(res);
+        setTimeLeft(res.window_seconds || 20);
+        startedAtRef.current = Date.now();
+      })
+      .catch((err) => {
+        setErrorMsg(err?.message || "Failed to restart backend liveness challenge.");
+      });
+  };
+
   return (
     <Modal
       isOpen={isOpen}
@@ -163,7 +179,16 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
       subtitle="Fresh backend nonce + live 16 kHz microphone audio verification"
     >
       <div className="space-y-4">
-        {errorMsg && <Banner variant="error">{errorMsg}</Banner>}
+        {errorMsg && (
+          <Banner variant="warn" title="Challenge Technical Error (Retryable — No END_CALL)">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{errorMsg}</span>
+              <Button type="button" size="sm" variant="secondary" onClick={handleRetryChallenge}>
+                Retry Challenge
+              </Button>
+            </div>
+          </Banner>
+        )}
 
         <div className="p-5 rounded-xl bg-[var(--fill-subtle)] border border-[var(--border)] text-center space-y-2">
           <p className="text-[14px] font-medium text-[var(--text-secondary)]">
@@ -259,7 +284,11 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
               )}
               <div>
                 <p className="font-bold">
-                  {verifyOutcome.liveness_status}
+                  {verifyOutcome.passed
+                    ? "Challenge Passed"
+                    : verifyOutcome.status === "incomplete" || verifyOutcome.liveness_status === "INCOMPLETE"
+                    ? "Challenge Technical Error (Retryable — No END_CALL)"
+                    : "Challenge Failed — END_CALL Override"}
                   {verifyOutcome.reason ? ` (${verifyOutcome.reason})` : ""}
                 </p>
                 <p>{verifyOutcome.explanation}</p>
@@ -282,7 +311,12 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
               ))}
             </ul>
 
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              {(verifyOutcome.status === "incomplete" || verifyOutcome.liveness_status === "INCOMPLETE") && (
+                <Button variant="secondary" size="sm" onClick={handleRetryChallenge}>
+                  Retry Challenge
+                </Button>
+              )}
               <Button variant="primary" size="sm" onClick={onClose}>
                 Done
               </Button>

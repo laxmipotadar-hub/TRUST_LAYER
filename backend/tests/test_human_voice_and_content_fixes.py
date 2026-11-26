@@ -74,7 +74,7 @@ def test_fix2_aletheia_real_high_confidence_never_flags_fake() -> None:
         )
     )
 
-    wav_5s = _make_wav_bytes(5.0, sample_rate=48000)
+    wav_11s = _make_wav_bytes(11.0, sample_rate=48000)
     ale_resp = MagicMock(status_code=200)
     ale_resp.raise_for_status = MagicMock()
     ale_resp.json.return_value = {
@@ -87,21 +87,49 @@ def test_fix2_aletheia_real_high_confidence_never_flags_fake() -> None:
         "request_id": "req_eid99",
         "result": {"decision": "match", "similarity": 0.92},
     }
+    models_resp = MagicMock(status_code=200)
+    models_resp.json.return_value = {"data": [{"id": "openai/gpt-oss-120b"}]}
+    llm_resp = MagicMock(status_code=200)
+    llm_resp.json.return_value = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "scam_script_risk": 5,
+                            "manipulation_risk": 0,
+                            "tactics": [],
+                            "summary": "Routine card confirmation.",
+                        }
+                    )
+                }
+            }
+        ]
+    }
+
+    async def route_get(url: str, **kwargs):  # noqa: ARG001
+        return models_resp
 
     async def route_post(url: str, **kwargs):
-        return ale_resp if "deepfake" in url else eid_resp
+        if "deepfake" in url:
+            return ale_resp
+        if "speakers/verify" in url:
+            return eid_resp
+        return llm_resp
 
     mc = AsyncMock()
     mc.__aenter__.return_value = mc
+    mc.get.side_effect = route_get
     mc.post.side_effect = route_post
 
     with (
         patch.object(settings, "detectif_api_key", "dtf_test_real99"),
+        patch.object(settings, "groq_api_key", "gsk_test_real99"),
         patch("httpx.AsyncClient", return_value=mc),
     ):
         resp = client.post(
             "/api/calls/analyze",
-            files={"file": ("human_48k.wav", wav_5s, "audio/wav")},
+            files={"file": ("human_48k.wav", wav_11s, "audio/wav")},
             data={
                 "transcript_text": "Hi, I am calling to confirm my recent card payment.",
                 "claimed_customer_id": live_cust,

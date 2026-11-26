@@ -99,8 +99,8 @@ async def test_http_200_parse_failure_reconciles_existing_speaker_instead_of_re_
 def test_stale_simulation_shadowed_by_live_enrollment_and_different_script_match_vs_nomatch() -> None:
     cust_id = "CUST-MARCUS-E2E"
     wav_script_a = _make_wav_bytes(16.0)
-    wav_script_b = _make_wav_bytes(6.0)
-    wav_impostor = _make_wav_bytes(6.5)
+    wav_script_b = _make_wav_bytes(11.0)
+    wav_impostor = _make_wav_bytes(11.5)
 
     # First create a stale SIMULATION voiceprint with the same customer_id
     sim_vp = VoiceprintRecord(
@@ -305,7 +305,7 @@ def test_parse_eidos_verify_response_variants() -> None:
 
 @pytest.mark.anyio
 async def test_any_casing_enrollment_source_verifies_when_provider_speaker_id_valid() -> None:
-    wav_5s = _make_wav_bytes(5.5)
+    wav_5s = _make_wav_bytes(11.5)
     vp_id = "VP-CASELESS-1"
     cid = "CUST-CASELESS-1"
     repo.add_voiceprint(

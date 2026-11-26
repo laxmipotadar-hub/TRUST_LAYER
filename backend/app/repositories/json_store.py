@@ -155,7 +155,11 @@ class AegisRepository:
     def get_settings_state(self) -> dict[str, Any]:
         with self._lock:
             raw = self._read(self._state_path)
-            weights = raw.get("layer_weights") or {}
+            weights = dict(raw.get("layer_weights") or {})
+            if "scam_safety" not in weights and "scam_intent" in weights:
+                weights["scam_safety"] = weights["scam_intent"]
+            if "behavioral_safety" not in weights and "behavioral_pressure" in weights:
+                weights["behavioral_safety"] = weights["behavioral_pressure"]
             merged_weights = {
                 key: float(weights.get(key, default_val))
                 for key, default_val in DEFAULT_LAYER_WEIGHTS.items()
