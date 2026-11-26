@@ -15,9 +15,8 @@ from app.schemas import (
 )
 from app.services.eidos_service import (
     delete_speaker_eidos,
-    enroll_speaker_eidos,
-    fetch_speakers_eidos,
-    find_existing_speaker_eidos,
+    enroll_customer_voiceprint,
+    resync_voiceprints_from_provider,
     verify_speaker_eidos,
 )
 
@@ -32,37 +31,14 @@ def list_voiceprints() -> list[VoiceprintRecord]:
 
 @router.post("/reconcile", response_model=list[VoiceprintRecord])
 async def reconcile_voiceprints() -> list[VoiceprintRecord]:
-    """Import any existing DetectifAI Eidos speakers missing from local voiceprints without re-charging."""
-    remote_speakers = await fetch_speakers_eidos()
-    local_by_cid = {vp.customer_id: vp for vp in repo.list_voiceprints()}
-    for spk in remote_speakers:
-        sid = str(spk.get("speaker_id") or spk.get("id") or "").strip()
-        if not sid:
-            continue
-        existing = local_by_cid.get(sid)
-        if existing and existing.enrollment_source == "REAL ANALYSIS" and existing.provider_speaker_ref == sid:
-            continue
-        now = str(spk.get("created_at") or datetime.now(timezone.utc).isoformat())
-        display = str(spk.get("display_name") or sid).strip()
-        record = VoiceprintRecord(
-            voiceprint_id=existing.voiceprint_id if existing else f"VP-{uuid4().hex[:6].upper()}",
-            customer_id=sid,
-            customer_name=existing.customer_name if existing else display,
-            account_tier=existing.account_tier if existing else "Private Banking",
-            enrollment_purpose="Banking Call Authentication & Fraud Prevention",
-            consent_confirmed=True,
-            consent_timestamp=now,
-            enrolled_at=now,
-            sample_duration_sec=max(5.0, float(spk.get("samples") or 1) * 5.0),
-            enrollment_source="REAL ANALYSIS",
-            provider_speaker_ref=sid,
-            provider_operation_id=existing.provider_operation_id if existing else None,
-            credits_used=0.0,
-            reconciled=True,
-            status="ACTIVE",
-        )
-        repo.add_voiceprint(record)
-    return repo.list_voiceprints()
+    """Re-sync local voiceprints against DetectifAI GET /v1/speakers without re-charging."""
+    return await resync_voiceprints_from_provider()
+
+
+@router.post("/resync", response_model=list[VoiceprintRecord])
+async def resync_voiceprints() -> list[VoiceprintRecord]:
+    """Alias for Re-sync from provider (GET /v1/speakers -> repair local records)."""
+    return await resync_voiceprints_from_provider()
 
 
 @router.post("/enroll", response_model=VoiceprintRecord)
@@ -101,6 +77,7 @@ async def enroll_voiceprint_with_audio(
     enrollment_purpose: str = Form(default="Banking Call Authentication & Fraud Prevention"),
     consent_confirmed: bool = Form(default=False),
     sample_duration_sec: float = Form(default=6.0),
+    execution_mode: str | None = Form(default=None),
 ) -> VoiceprintRecord:
     if not consent_confirmed:
         raise HTTPException(
@@ -112,43 +89,19 @@ async def enroll_voiceprint_with_audio(
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Uploaded audio sample is empty.")
 
-    now = datetime.now(timezone.utc).isoformat()
-    cid = customer_id.strip()
-    state = repo.get_settings_state()
-
-    if state["app_mode"] == "REAL":
-        outcome = await enroll_speaker_eidos(
+    try:
+        return await enroll_customer_voiceprint(
             audio_bytes=audio_bytes,
-            speaker_id=cid,
+            customer_id=customer_id,
+            customer_name=customer_name,
+            account_tier=account_tier,
+            enrollment_purpose=enrollment_purpose,
+            sample_duration_sec=sample_duration_sec,
             filename=file.filename or "enroll.wav",
+            execution_mode=execution_mode,
         )
-        if not outcome.success:
-            raise HTTPException(status_code=502, detail=outcome.detail)
-        source = "REAL ANALYSIS"
-        ref = outcome.provider_speaker_ref
-        op_id = outcome.provider_operation_id
-    else:
-        source = "SIMULATION"
-        ref = f"sim-{cid}"
-        op_id = None
-
-    # Raw audio bytes are never saved to disk; only speaker reference & metadata are persisted.
-    record = VoiceprintRecord(
-        voiceprint_id=f"VP-{uuid4().hex[:6].upper()}",
-        customer_id=cid,
-        customer_name=customer_name.strip(),
-        account_tier=account_tier.strip(),
-        enrollment_purpose=enrollment_purpose.strip(),
-        consent_confirmed=True,
-        consent_timestamp=now,
-        enrolled_at=now,
-        sample_duration_sec=sample_duration_sec,
-        enrollment_source=source,
-        provider_speaker_ref=ref,
-        provider_operation_id=op_id,
-        status="ACTIVE",
-    )
-    return repo.add_voiceprint(record)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/verify", response_model=VoiceprintVerifyResponse)
@@ -156,22 +109,24 @@ async def verify_voiceprint_audio(
     file: UploadFile | None = File(default=None),
     claimed_customer_id: str = Form(...),
     simulate_outcome: str = Form(default="match"),
+    execution_mode: str | None = Form(default=None),
 ) -> VoiceprintVerifyResponse:
     cid = claimed_customer_id.strip()
     enrolled = repo.get_voiceprint_by_customer(cid)
     now = datetime.now(timezone.utc).isoformat()
     state = repo.get_settings_state()
+    use_real_eidos = state["app_mode"] == "REAL" or (execution_mode or "").strip().upper() in ("LIVE", "REAL")
 
     audio_bytes = await file.read() if file is not None else None
 
-    if state["app_mode"] == "REAL":
+    if use_real_eidos:
         evaluation = await verify_speaker_eidos(
             audio_bytes=audio_bytes,
             claimed_customer_id=cid,
             filename=(file.filename or "verify.wav") if file is not None else "no_audio.wav",
         )
         res = evaluation.result
-        if res.status == "UNAVAILABLE":
+        if res.status in ("UNAVAILABLE", "error"):
             ver_status = "UNAVAILABLE"
         elif res.status == "PASS":
             ver_status = "VERIFIED"
@@ -253,8 +208,9 @@ async def revoke_voiceprint(voiceprint_id: str) -> VoiceprintRecord:
     if not existing:
         raise HTTPException(status_code=404, detail=f"Voiceprint '{voiceprint_id}' not found.")
     state = repo.get_settings_state()
-    if state["app_mode"] == "REAL" and existing.provider_speaker_ref:
-        ok, msg = await delete_speaker_eidos(existing.provider_speaker_ref)
+    provider_sid = existing.provider_speaker_id or existing.provider_speaker_ref
+    if (state["app_mode"] == "REAL" or existing.enrollment_source == "REAL ANALYSIS") and provider_sid and not provider_sid.startswith(("sim-", "eidos-ref-")):
+        ok, msg = await delete_speaker_eidos(provider_sid)
         if not ok:
             raise HTTPException(status_code=502, detail=msg)
     revoked = repo.revoke_voiceprint(voiceprint_id, datetime.now(timezone.utc).isoformat())
@@ -269,8 +225,9 @@ async def delete_voiceprint(voiceprint_id: str) -> VoiceprintDeleteResponse:
     if not existing:
         raise HTTPException(status_code=404, detail=f"Voiceprint '{voiceprint_id}' not found.")
     state = repo.get_settings_state()
-    if state["app_mode"] == "REAL" and existing.provider_speaker_ref:
-        ok, msg = await delete_speaker_eidos(existing.provider_speaker_ref)
+    provider_sid = existing.provider_speaker_id or existing.provider_speaker_ref
+    if (state["app_mode"] == "REAL" or existing.enrollment_source == "REAL ANALYSIS") and provider_sid and not provider_sid.startswith(("sim-", "eidos-ref-")):
+        ok, msg = await delete_speaker_eidos(provider_sid)
         if not ok:
             raise HTTPException(status_code=502, detail=msg)
     deleted = repo.delete_voiceprint(voiceprint_id)

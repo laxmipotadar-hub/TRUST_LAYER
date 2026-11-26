@@ -52,6 +52,8 @@ export interface SpeakerIdentityResult {
   match_confidence: number | null;
   claimed_customer_id: string;
   matched_customer_name?: string | null;
+  provider_speaker_id?: string | null;
+  decision?: string | null;
   enrolled: boolean;
   skip_reason?: string | null;
   similarity_tier?: string | null;
@@ -312,8 +314,11 @@ export interface VoiceprintRecord {
   revoked_at?: string | null;
   sample_duration_sec: number;
   enrollment_source: AnalysisProvenance;
+  provider_speaker_id?: string | null;
   provider_speaker_ref?: string | null;
   provider_operation_id?: string | null;
+  credits_used?: number | null;
+  reconciled?: boolean;
   last_verified_at?: string | null;
   last_verification_status: string;
   last_match_percentage?: number | null;
@@ -341,7 +346,9 @@ export interface HealthResponse {
   app_mode: AppMode;
   cache_enabled: boolean;
   detectifai_configured: boolean;
-  gemini_configured: boolean;
+  groq_configured: boolean;
+  detectifai?: "SET" | "NOT SET";
+  groq?: "SET" | "NOT SET";
   active_calls_count: number;
   voiceprints_count: number;
   real_mode_note: string;
@@ -359,18 +366,20 @@ export interface SettingsResponse {
   ema_alpha: number;
   language: string;
   detectifai_configured: boolean;
-  gemini_configured: boolean;
+  groq_configured: boolean;
   detectifai_base_url: string;
-  gemini_model: string;
+  groq_stt_model: string;
+  groq_llm_model: string;
 }
 
 export interface SecretsStatusResponse {
   detectifai_configured: boolean;
-  gemini_configured: boolean;
+  groq_configured: boolean;
   detectif_key_hint: string;
-  gemini_key_hint: string;
+  groq_key_hint: string;
   detectifai_base_url: string;
-  gemini_model: string;
+  groq_stt_model: string;
+  groq_llm_model: string;
 }
 
 export interface CreditsResponse {
@@ -386,7 +395,7 @@ export interface CreditsResponse {
 export interface OperationLedgerEntry {
   operation_id: string;
   call_id: string;
-  service: "aletheia" | "eidos" | "gemini" | "enroll" | "challenge" | "pipeline";
+  service: "aletheia" | "eidos" | "groq" | "enroll" | "challenge" | "pipeline";
   endpoint: string;
   mode: "FRESH" | "CACHED" | "DEMO";
   status: string;
@@ -394,6 +403,16 @@ export interface OperationLedgerEntry {
   latency_ms: number;
   timestamp: string;
   cached: boolean;
+}
+
+export interface ProviderReconciliation {
+  status: "RECONCILED" | "PARTIAL" | "UNAVAILABLE";
+  matched_count: number;
+  unmatched_local_count: number;
+  provider_record_count: number;
+  provider_credits_total: number;
+  matched_operation_ids: string[];
+  note: string;
 }
 
 export interface UsageSummaryResponse {
@@ -405,11 +424,12 @@ export interface UsageSummaryResponse {
   burn_rate_per_call: number;
   aletheia_calls: number;
   eidos_calls: number;
-  gemini_calls: number;
+  groq_calls: number;
   cache_hits: number;
   fresh_calls: number;
   operations: OperationLedgerEntry[];
   provider_usage_raw?: Record<string, unknown> | null;
+  reconciliation?: ProviderReconciliation;
 }
 
 export interface ChallengeSession {

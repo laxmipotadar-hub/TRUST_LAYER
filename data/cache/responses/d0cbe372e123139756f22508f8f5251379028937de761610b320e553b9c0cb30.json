@@ -1,0 +1,70 @@
+{
+  "cache_key": "d0cbe372e123139756f22508f8f5251379028937de761610b320e553b9c0cb30",
+  "provider": "groq_content",
+  "cached_at": "2026-11-26T01:47:27.250746+00:00",
+  "cache_hit": false,
+  "payload": {
+    "transcript": "Hello, my name is Mahi. I am calling to inform you that your bank account requires verification. Please do not share your OTP, PIN or password with anyone. If you receive a suspicious call, disconnect immediately and contact your bank using its official customer care number. Thank you.",
+    "asr_status": "OK",
+    "asr_reason": null,
+    "scam": {
+      "risk_score": 0.0,
+      "safety_score": 100.0,
+      "behavioral_pressure_score": 0.0,
+      "status": "PASS",
+      "categories": [],
+      "detected_patterns": [],
+      "pressure_tactics": [],
+      "flagged_phrases": [],
+      "engine_used": "Groq Whisper + LLM",
+      "model_version": "openai/gpt-oss-120b",
+      "latency_ms": 1022.7,
+      "provenance": "REAL ANALYSIS",
+      "summary": "The call is a benign security advisory with no coercive tactics.",
+      "recommended_action": "No elevated social-engineering risk detected.",
+      "fallback_used": false,
+      "fallback_reason": null,
+      "cache_hit": false,
+      "operation_id": "op_groq_llm_e371b82c",
+      "cost_credits": 0.0,
+      "raw_payload": {
+        "model": "openai/gpt-oss-120b",
+        "scam_script_risk": 0.0,
+        "manipulation_risk_raw": 0.0,
+        "behavioural_score_computed": 0.0,
+        "tactics_verified": [],
+        "tactics_dropped": 0,
+        "summary": "The call is a benign security advisory with no coercive tactics."
+      }
+    },
+    "manipulation": {
+      "score": 0.0,
+      "safety_score": 100.0,
+      "status": "PASS",
+      "model_version": "openai/gpt-oss-120b",
+      "latency_ms": 1022.7,
+      "category_counts": {
+        "urgency": 0,
+        "secrecy": 0,
+        "authority": 0,
+        "threat": 0
+      },
+      "markers": [],
+      "sparkline": [
+        0.0
+      ],
+      "provenance": "REAL ANALYSIS",
+      "raw_payload": {
+        "model": "openai/gpt-oss-120b",
+        "score": 0.0,
+        "category_counts": {
+          "urgency": 0,
+          "secrecy": 0,
+          "authority": 0,
+          "threat": 0
+        },
+        "markers": []
+      }
+    }
+  }
+}

@@ -10,7 +10,7 @@ Audited directly against `backend/app/` and `frontend/src/` prior to Step 1 edit
 | Module | Endpoint | Request / Response Schema | Notes |
 | --- | --- | --- | --- |
 | `main.py` | `GET /` | `dict[str, str]` | Root service banner |
-| `health.py` | `GET /api/health` | `HealthResponse` | `status`, `app_mode`, `cache_enabled`, `detectifai_configured`, `gemini_configured`, `active_calls_count`, `voiceprints_count`, `real_mode_note` |
+| `health.py` | `GET /api/health` | `HealthResponse` | `status`, `app_mode`, `cache_enabled`, `detectifai_configured`, `groq_configured`, `detectifai`, `groq`, `active_calls_count`, `voiceprints_count`, `real_mode_note` |
 | `health.py` | `GET /api/settings` | `SettingsResponse` | Bot Guard + app mode + provider booleans + URL/model |
 | `health.py` | `POST /api/settings` | `SettingsUpdateRequest` -> `SettingsResponse` | Updates `app_mode`, `cache_enabled`, `bot_guard_enabled`, `bot_guard_threshold` |
 | `health.py` | `GET /api/cache/stats` | `dict` | Cache entry count / disk usage |
@@ -42,12 +42,12 @@ Audited directly against `backend/app/` and `frontend/src/` prior to Step 1 edit
 ### C. Service Layers & Config (`backend/app/services/`, `backend/app/core/config.py`)
 - **`aletheia_service.py`**: `detect_deepfake_aletheia()` — calls DetectifAI `POST /v1/deepfake/detect`, validates `>= 4.0s`, splits long audio into 5s sliding chunks, parses `verdict`, `score`, `segments`, `request_id`. Gap: does not capture `latency_ms`, raw JSON response, `operation_id`, or `cost_credits` into a ledger, nor bypass cache in `LIVE` mode.
 - **`eidos_service.py`**: `enroll_speaker_eidos()`, `verify_speaker_eidos()` — calls DetectifAI `POST /v1/speakers/enroll` and `POST /v1/speakers/verify`, normalizes `similarity` (`-1..1`), `match_confidence`, `score`, neutral `50.0` when unenrolled. Gap: no provider `DELETE /v1/speakers/{id}` call on revoke, no latency/raw JSON/ledger metering, no `LIVE` cache bypass.
-- **`scam_analysis_service.py`**: `analyze_scam_transcript()` — Gemini `gemini-2.5-flash` structured JSON + 9-rule deterministic fallback (`THREAT_RULES`) producing `risk_score`, `safety_score`, `behavioral_pressure_score`, `detected_patterns`, `pressure_tactics`, `flagged_phrases`. Gap: backend bundles Script Analysis + Behavioral Pressure together without structured category timeline markers (`urgency`, `secrecy`, `authority`, `threat`) + transcript excerpts or raw payload/latency metadata.
+- **`scam_analysis_service.py`**: `analyze_scam_transcript()` — Groq LLM structured JSON (`openai/gpt-oss-120b` / configured `GROQ_LLM_MODEL`) + 9-rule deterministic fallback (`THREAT_RULES`) producing `risk_score`, `safety_score`, `behavioral_pressure_score`, `detected_patterns`, `pressure_tactics`, `flagged_phrases`.
 - **`trust_engine.py`**: `calculate_trust_score()` — 4-layer weighted sum (`0.35`, `0.30`, `0.20`, `0.15`), `liveness_override_applied`, `build_evidence_timeline()`. Gap: fixed weights/thresholds, no EMA smoothing across live audio chunks, no explicit `Aletheia synthetic + Eidos match -> voice-clone override`, decision uses `SAFE/CAUTION/THREAT` rather than exposing band `SAFE/REVIEW/THREAT` + decision `ALLOW/STEP_UP/BLOCK`.
 - **`challenge_service.py`**: `start_challenge_session()`, `verify_challenge_response()`.
 - **`report_service.py`**: `generate_call_report()` with `multilingual_verdicts` (`en`, `es`, `fr`, `de`). Gap: no report list endpoint or user feedback (`Was this a scam?`) persistence.
 - **`cache_service.py` & `threat_registry.py` & `json_store.py`**: JSON persistence under `data/`.
-- **`core/config.py`**: `detectif_api_key`, `detectif_api_base_url`, `gemini_api_key`, `gemini_model`, `app_mode`, `cache_enabled`, `cors_origins`, `data_dir`. Gap: no runtime/server-side key setter endpoint, no configurable layer weights or band thresholds.
+- **`core/config.py`**: `detectif_api_key`, `detectif_api_base_url`, `groq_api_key`, `groq_stt_model`, `groq_llm_model`, `app_mode`, `cache_enabled`, `cors_origins`, `data_dir`.
 
 ---
 

@@ -55,7 +55,7 @@ export const IntelligencePage: React.FC = () => {
         <div>
           <h1 className="page-title">Script &amp; Manipulation Intelligence</h1>
           <p className="body-text">
-            Layer 3 Script Intent (Gemini / Rules) and Layer 4 Behavioral Manipulation marker telemetry.
+            Layer 3 Script Intent (Groq Whisper + LLM / Rules) and Layer 4 Behavioral Manipulation marker telemetry.
           </p>
         </div>
         <EmptyState
@@ -90,7 +90,7 @@ export const IntelligencePage: React.FC = () => {
         <div>
           <h1 className="page-title">Script &amp; Manipulation Intelligence</h1>
           <p className="body-text">
-            Deep inspection of Layer 3 Script Intent and Layer 4 Psychological Pressure telemetry.
+            Deep inspection of Layer 3 Script Intent (Groq Whisper + LLM) and Layer 4 Psychological Pressure telemetry.
           </p>
         </div>
         <div className="flex items-center gap-3">

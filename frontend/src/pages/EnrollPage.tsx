@@ -5,13 +5,13 @@ import { useAnalysis } from "../context/AnalysisContext";
 
 export const EnrollPage: React.FC = () => {
   const navigate = useNavigate();
-  const { refreshVoiceprints } = useAnalysis();
+  const { refreshVoiceprints, refreshSystem } = useAnalysis();
 
   return (
     <div className="space-y-6">
       <EnrollmentForm
         onSuccess={() => {
-          refreshVoiceprints();
+          void Promise.all([refreshVoiceprints(), refreshSystem()]);
         }}
         onNavigateList={() => navigate("/voiceprints")}
       />

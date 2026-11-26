@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass
+import re
 import time
 from uuid import uuid4
-import httpx
 
-from app.core.config import settings
 from app.schemas import (
     AnalysisMode,
     AnalysisProvenance,
@@ -19,8 +16,6 @@ from app.schemas import (
     ScamAnalysisResult,
     TranscriptSegment,
 )
-from app.services.cache_service import cache_service
-from app.services.ledger_service import record_operation
 
 
 @dataclass(frozen=True)
@@ -34,7 +29,6 @@ class ScamPatternRule:
     explanation: str
 
 
-# Covers all 9 required banking threat vectors
 THREAT_RULES: list[ScamPatternRule] = [
     ScamPatternRule(
         pattern=r"\b(fraud department|central bank|regulatory compliance|senior security officer|bank security|federal investigator)\b",
@@ -120,38 +114,6 @@ THREAT_RULES: list[ScamPatternRule] = [
 ]
 
 
-GEMINI_PROMPT = """You are AEGIS Scam-Risk & Behavioral-Pressure Analyzer for banking security operations.
-Analyze the call transcript for:
-1. Authority impersonation
-2. Urgent payment requests
-3. OTP requests
-4. Bank-account threats
-5. Password disclosure
-6. Secretive instructions
-7. Remote-access requests
-8. Fear-based manipulation
-9. Suspicious financial transfers
-
-Return STRICT JSON ONLY with keys:
-{
-  "scam_risk_score": number (0-100),
-  "behavioral_pressure_score": number (0-100),
-  "detected_patterns": string[],
-  "pressure_tactics": string[],
-  "evidence": [
-    {
-      "phrase": string,
-      "category": string,
-      "severity": "LOW" | "MEDIUM" | "HIGH",
-      "weight": integer (1-50),
-      "explanation": string
-    }
-  ],
-  "explanation": string,
-  "recommended_action": string
-}"""
-
-
 def run_deterministic_scam_fallback(
     transcript_text: str,
     provenance: str = "SIMULATION",
@@ -214,6 +176,7 @@ def run_deterministic_scam_fallback(
         risk_score=risk_score,
         safety_score=safety_score,
         behavioral_pressure_score=pressure_score,
+        status="PASS" if risk_score < 40 else ("WARN" if risk_score < 70 else "FAIL"),
         categories=detected_patterns,
         detected_patterns=detected_patterns,
         pressure_tactics=tactics,
@@ -221,7 +184,7 @@ def run_deterministic_scam_fallback(
         engine_used="Deterministic Keyword & Weighted-Rule Fallback"
         if fallback_used
         else "Cached Scenario Scam Fixture",
-        provenance=prov,
+        provenance=prov,  # type: ignore[arg-type]
         summary=explanation,
         recommended_action=recommended_action,
         fallback_used=fallback_used,
@@ -231,7 +194,7 @@ def run_deterministic_scam_fallback(
 
 
 def format_scam_contract_dict(scam: ScamAnalysisResult) -> dict:
-    """Return the exact structured JSON contract requested for Scam Analysis."""
+    """Return the structured JSON contract for Script & Scam Analysis."""
     return {
         "scam_risk_score": scam.risk_score,
         "behavioral_pressure_score": scam.behavioral_pressure_score,
@@ -253,180 +216,47 @@ async def analyze_scam_transcript(
     bypass_cache: bool = False,
     call_id: str | None = None,
 ) -> ScamAnalysisResult:
-    """Analyze transcript with Gemini API in REAL mode, or cached/deterministic fallback."""
-    t0 = time.perf_counter()
-    cleaned_text = transcript_text.strip()
-    if analysis_mode == "REAL" and not cleaned_text:
-        return ScamAnalysisResult(
-            risk_score=None,
-            safety_score=None,
-            behavioral_pressure_score=None,
-            status="UNAVAILABLE",
-            categories=[],
-            detected_patterns=[],
-            pressure_tactics=[],
-            flagged_phrases=[],
-            engine_used="Unavailable (No Transcript)",
-            model_version="unavailable",
-            latency_ms=round((time.perf_counter() - t0) * 1000.0, 2),
-            provenance="REAL ANALYSIS",
-            summary="No caller transcript or ASR text available; L3 Script Analysis is unavailable.",
-            recommended_action="Capture spoken transcript before relying on script risk.",
-            fallback_used=False,
-            fallback_reason="No transcript supplied and audio transcription did not run.",
-            cache_hit=False,
-        )
+    """Analyze transcript with Groq LLM in REAL mode, or cached/deterministic fallback in DEMO/CACHED."""
+    from app.services.content_analysis_service import analyse_text
 
-    cache_key = cache_service.compute_request_hash(
-        provider="gemini_scam",
-        params={"model": settings.gemini_model},
-        text=cleaned_text,
-    )
-    if analysis_mode == "CACHED":
-        cached = cache_service.get(cache_key)
-        if cached and isinstance(cached.get("payload"), dict):
-            res_obj = ScamAnalysisResult(
-                **{**cached["payload"], "provenance": "CACHED ANALYSIS", "cache_hit": True, "cost_credits": 0.0}
-            )
-            if call_id:
-                record_operation(
-                    operation_id=res_obj.operation_id or f"cache_gem_{uuid4().hex[:8]}",
-                    call_id=call_id,
-                    service="gemini",
-                    endpoint=f"/models/{settings.gemini_model}:generateContent",
-                    mode="CACHED",
-                    status="done",
-                    cost_credits=0.0,
-                    latency_ms=0.0,
-                    cached=True,
-                )
-            return res_obj
-        det = run_deterministic_scam_fallback(
-            transcript_text,
-            provenance="CACHED ANALYSIS",
-            fallback_reason=(
-                "CACHED mode active: no cached Gemini response found; deterministic keyword & weighted-rule fallback executed."
-            ),
-        )
-        return det.model_copy(update={"latency_ms": round((time.perf_counter() - t0) * 1000.0, 2), "model_version": "rule-engine-v1", "raw_payload": format_scam_contract_dict(det)})
+    t0 = time.perf_counter()
+    cleaned = transcript_text.strip()
 
     if analysis_mode == "SIMULATION":
         det = run_deterministic_scam_fallback(
-            transcript_text,
+            cleaned,
             provenance="SIMULATION",
-            fallback_reason=(
-                "SIMULATION mode active: deterministic keyword & weighted-rule fallback executed without live Gemini call."
-            ),
-        )
-        return det.model_copy(update={"latency_ms": round((time.perf_counter() - t0) * 1000.0, 2), "model_version": "rule-engine-v1", "raw_payload": format_scam_contract_dict(det)})
-
-    if not settings.gemini_configured:
-        det = run_deterministic_scam_fallback(
-            transcript_text,
-            provenance="REAL ANALYSIS",
-            fallback_reason="GEMINI_API_KEY missing on server; activated deterministic keyword & weighted-rule analyzer.",
+            fallback_reason="SIMULATION mode active: deterministic keyword & weighted-rule analyzer executed.",
         )
         return det.model_copy(
             update={
-                "provenance": "REAL ANALYSIS",
                 "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
                 "model_version": "rule-engine-v1",
                 "raw_payload": format_scam_contract_dict(det),
             }
         )
 
-    if not bypass_cache:
-        cached = cache_service.get(cache_key)
-        if cached and isinstance(cached.get("payload"), dict):
-            return ScamAnalysisResult(**{**cached["payload"], "cache_hit": True, "cost_credits": 0.0})
+    if analysis_mode == "CACHED":
+        det = run_deterministic_scam_fallback(
+            cleaned,
+            provenance="CACHED ANALYSIS",
+            fallback_reason="CACHED mode active: rule analyzer on cached transcript.",
+        )
+        return det.model_copy(
+            update={
+                "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                "model_version": "rule-engine-v1",
+                "raw_payload": format_scam_contract_dict(det),
+            }
+        )
 
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent?key={settings.gemini_api_key}"
+    scam, _ = await analyse_text(
+        cleaned,
+        analysis_mode="REAL",
+        bypass_cache=bypass_cache,
+        call_id=call_id,
     )
-    payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": f"{GEMINI_PROMPT}\n\nTRANSCRIPT:\n{transcript_text}"}],
-            }
-        ],
-        "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-
-        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-        parsed = json.loads(raw_text)
-
-        risk_score = round(float(max(0, min(100, parsed.get("scam_risk_score", 0)))), 1)
-        pressure_score = round(
-            float(max(0, min(100, parsed.get("behavioral_pressure_score", 0)))), 1
-        )
-        patterns = list(parsed.get("detected_patterns", []))
-        evidence = [FlaggedPhrase(**item) for item in parsed.get("evidence", [])]
-        op_id = f"op_gem_{uuid4().hex[:8]}"
-
-        result = ScamAnalysisResult(
-            risk_score=risk_score,
-            safety_score=round(100.0 - risk_score, 1),
-            behavioral_pressure_score=pressure_score,
-            categories=patterns,
-            detected_patterns=patterns,
-            pressure_tactics=list(parsed.get("pressure_tactics", [])),
-            flagged_phrases=evidence,
-            engine_used=f"Gemini API ({settings.gemini_model})",
-            model_version=settings.gemini_model,
-            latency_ms=latency_ms,
-            provenance="REAL ANALYSIS",
-            summary=str(parsed.get("explanation", "Gemini scam-risk evaluation completed.")),
-            recommended_action=str(
-                parsed.get("recommended_action", "Follow standard banking verification workflow.")
-            ),
-            fallback_used=False,
-            fallback_reason=None,
-            cache_hit=False,
-            operation_id=op_id,
-            cost_credits=0.0,
-            raw_payload=parsed,
-        )
-        if not bypass_cache:
-            cache_service.set(cache_key, "gemini_scam", result.model_dump())
-        if call_id:
-            record_operation(
-                operation_id=op_id,
-                call_id=call_id,
-                service="gemini",
-                endpoint=f"/models/{settings.gemini_model}:generateContent",
-                mode="FRESH",
-                status="done",
-                cost_credits=0.0,
-                latency_ms=latency_ms,
-                cached=False,
-            )
-        return result
-    except Exception as exc:
-        det = run_deterministic_scam_fallback(
-            transcript_text,
-            provenance="REAL ANALYSIS",
-            fallback_reason=(
-                f"Gemini API unavailable ({exc.__class__.__name__}); "
-                "activated deterministic keyword & weighted-rule fallback."
-            ),
-        )
-        return det.model_copy(
-            update={
-                "provenance": "REAL ANALYSIS",
-                "latency_ms": round((time.perf_counter() - t0) * 1000.0, 2),
-                "model_version": "rule-engine-v1",
-                "raw_payload": format_scam_contract_dict(det),
-            }
-        )
+    return scam
 
 
 _CATEGORY_MAP: dict[str, ManipulationCategory] = {
@@ -468,18 +298,14 @@ def extract_manipulation_analysis(
             raw_payload={"status": "UNAVAILABLE", "reason": "No transcript supplied."},
         )
 
-    segments = transcript_segments or (
-        [
-            TranscriptSegment(
-                id="seg-1",
-                timestamp_sec=1.0,
-                speaker="CALLER",
-                text=transcript_text,
-            )
-        ]
-        if transcript_text.strip()
-        else []
-    )
+    segments = transcript_segments or [
+        TranscriptSegment(
+            id="seg-1",
+            timestamp_sec=1.0,
+            speaker="CALLER",
+            text=cleaned_text,
+        )
+    ]
 
     markers: list[ManipulationMarker] = []
     counts: dict[str, int] = {"urgency": 0, "secrecy": 0, "authority": 0, "threat": 0}

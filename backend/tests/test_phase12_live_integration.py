@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.main import app
+from app.repositories.json_store import repo
+from app.schemas import VoiceprintRecord
 from app.services.cache_service import cache_service
 
 
@@ -49,7 +51,7 @@ def test_live_call_short_audio_rejected_as_invalid_in_real_mode() -> None:
     assert data["trust_score"] is None
 
 
-def test_live_call_real_mode_with_aletheia_eidos_gemini_and_cache_hit() -> None:
+def test_live_call_real_mode_with_aletheia_eidos_groq_and_cache_hit() -> None:
     wav_5s = _make_wav_bytes(5.2)
 
     ale_resp = MagicMock(status_code=200)
@@ -72,92 +74,112 @@ def test_live_call_real_mode_with_aletheia_eidos_gemini_and_cache_hit() -> None:
         "result": {"decision": "match", "similarity": 0.94, "duration_seconds": 5.0},
     }
 
-    gem_resp = MagicMock(status_code=200)
-    gem_resp.raise_for_status = MagicMock()
-    gem_resp.json.return_value = {
-        "candidates": [
+    models_resp = MagicMock(status_code=200)
+    models_resp.raise_for_status = MagicMock()
+    models_resp.json.return_value = {"data": [{"id": "openai/gpt-oss-120b"}]}
+
+    groq_resp = MagicMock(status_code=200)
+    groq_resp.raise_for_status = MagicMock()
+    groq_resp.json.return_value = {
+        "choices": [
             {
-                "content": {
-                    "parts": [
+                "message": {
+                    "content": json.dumps(
                         {
-                            "text": json.dumps(
-                                {
-                                    "scam_risk_score": 8,
-                                    "behavioral_pressure_score": 10,
-                                    "detected_patterns": [],
-                                    "pressure_tactics": [],
-                                    "evidence": [],
-                                    "explanation": "Routine customer inquiry.",
-                                    "recommended_action": "Proceed safely.",
-                                }
-                            )
+                            "scam_script_risk": 8,
+                            "manipulation_risk": 10,
+                            "tactics": [],
+                            "summary": "Routine customer inquiry.",
                         }
-                    ]
+                    )
                 }
             }
         ]
     }
+
+    async def route_get(url: str, **kwargs):  # noqa: ARG001
+        return models_resp
 
     async def route_post(url: str, **kwargs):  # noqa: ARG001
         if "deepfake/detect" in url:
             return ale_resp
         if "speakers/verify" in url:
             return eid_resp
-        return gem_resp
+        return groq_resp
 
     unified_client = AsyncMock()
     unified_client.__aenter__.return_value = unified_client
+    unified_client.get.side_effect = route_get
     unified_client.post.side_effect = route_post
 
-    # First verify CACHE miss is honest when cache is empty
-    miss_res = client.post(
-        "/api/calls/analyze",
-        files={"file": ("live.wav", wav_5s, "audio/wav")},
-        data={
-            "transcript_text": "Hi, confirming my Zurich travel notice.",
-            "claimed_customer_id": "CUST-4821-MARCUS",
-            "analysis_mode": "CACHED",
-        },
+    live_cid = "CUST-LIVE-P12"
+    repo.add_voiceprint(
+        VoiceprintRecord(
+            voiceprint_id="VP-LIVE-P12",
+            customer_id=live_cid,
+            customer_name="Live P12 Marcus",
+            account_tier="Private Wealth",
+            consent_confirmed=True,
+            enrolled_at="2026-11-25T10:00:00Z",
+            sample_duration_sec=16.0,
+            enrollment_source="REAL ANALYSIS",
+            provider_speaker_id="spk_live_p12",
+            provider_speaker_ref="spk_live_p12",
+            status="ACTIVE",
+        )
     )
-    assert miss_res.status_code == 200
-    assert miss_res.json()["model_status"]["aletheia"] == "CACHE_MISS"
-    assert miss_res.json()["verdict"] == "INCOMPLETE ANALYSIS"
-
-    # Now execute REAL mode
-    with patch.object(settings, "detectif_api_key", "dtf_live_mock"), patch.object(
-        settings, "gemini_api_key", "gem_live_mock"
-    ), patch("httpx.AsyncClient", return_value=unified_client):
-        real_res = client.post(
+    try:
+        # First verify CACHE miss is honest when cache is empty
+        miss_res = client.post(
             "/api/calls/analyze",
             files={"file": ("live.wav", wav_5s, "audio/wav")},
             data={
                 "transcript_text": "Hi, confirming my Zurich travel notice.",
-                "claimed_customer_id": "CUST-4821-MARCUS",
-                "caller_label": "Live Mic Marcus",
-                "analysis_mode": "REAL",
+                "claimed_customer_id": live_cid,
+                "analysis_mode": "CACHED",
             },
         )
-        assert real_res.status_code == 200
-        body = real_res.json()
-        assert body["analysis_mode"] == "REAL"
-        assert body["trust_score"] == 93.70
-        assert body["verdict"] == "SAFE"
-        assert body["session"]["overall_provenance"] == "REAL ANALYSIS"
-        assert len(body["session"]["segment_chunks"]) == 1
+        assert miss_res.status_code == 200
+        assert miss_res.json()["model_status"]["aletheia"] == "CACHE_MISS"
+        assert miss_res.json()["verdict"] == "INCOMPLETE ANALYSIS"
 
-    # Now CACHED mode with the exact same audio & transcript returns cache hits!
-    hit_res = client.post(
-        "/api/calls/analyze",
-        files={"file": ("live.wav", wav_5s, "audio/wav")},
-        data={
-            "transcript_text": "Hi, confirming my Zurich travel notice.",
-            "claimed_customer_id": "CUST-4821-MARCUS",
-            "analysis_mode": "CACHED",
-        },
-    )
-    assert hit_res.status_code == 200
-    hit_body = hit_res.json()
-    assert hit_body["model_status"]["aletheia"] == "CACHED"
-    assert hit_body["model_status"]["eidos"] == "CACHED"
-    assert hit_body["trust_score"] == 93.70
-    assert hit_body["session"]["overall_provenance"] == "CACHED ANALYSIS"
+        # Now execute REAL mode
+        with patch.object(settings, "detectif_api_key", "dtf_live_mock"), patch.object(
+            settings, "groq_api_key", "gsk_live_mock"
+        ), patch("httpx.AsyncClient", return_value=unified_client):
+            real_res = client.post(
+                "/api/calls/analyze",
+                files={"file": ("live.wav", wav_5s, "audio/wav")},
+                data={
+                    "transcript_text": "Hi, confirming my Zurich travel notice.",
+                    "claimed_customer_id": live_cid,
+                    "caller_label": "Live Mic Marcus",
+                    "analysis_mode": "REAL",
+                },
+            )
+            assert real_res.status_code == 200
+            body = real_res.json()
+            assert body["analysis_mode"] == "REAL"
+            assert body["trust_score"] == 95.20
+            assert body["verdict"] == "SAFE"
+            assert body["session"]["overall_provenance"] == "REAL ANALYSIS"
+            assert len(body["session"]["segment_chunks"]) == 1
+
+        # Now CACHED mode with the exact same audio & transcript returns cache hits!
+        hit_res = client.post(
+            "/api/calls/analyze",
+            files={"file": ("live.wav", wav_5s, "audio/wav")},
+            data={
+                "transcript_text": "Hi, confirming my Zurich travel notice.",
+                "claimed_customer_id": live_cid,
+                "analysis_mode": "CACHED",
+            },
+        )
+        assert hit_res.status_code == 200
+        hit_body = hit_res.json()
+        assert hit_body["model_status"]["aletheia"] == "CACHED"
+        assert hit_body["model_status"]["eidos"] == "CACHED"
+        assert hit_body["trust_score"] == 95.20
+        assert hit_body["session"]["overall_provenance"] == "CACHED ANALYSIS"
+    finally:
+        repo.delete_voiceprint("VP-LIVE-P12")

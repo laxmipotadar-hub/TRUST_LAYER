@@ -23,6 +23,13 @@ export interface LayerStatuses {
   manipulation: LayerRunStatus;
 }
 
+export interface ToastNotification {
+  id: number;
+  variant: "info" | "success" | "warning" | "error";
+  title: string;
+  message: string;
+}
+
 interface AnalysisContextType {
   executionMode: ExecutionMode;
   setExecutionMode: (mode: ExecutionMode) => Promise<void>;
@@ -62,7 +69,10 @@ interface AnalysisContextType {
     caller_label?: string;
     duration_hint_sec?: number;
   }) => Promise<CallSession | null>;
-  executeCallAction: (action: string, note?: string) => Promise<void>;
+  executeCallAction: (action: string, note?: string, callIdOverride?: string) => Promise<CallSession | null>;
+  toast: ToastNotification | null;
+  showToast: (t: Omit<ToastNotification, "id">) => void;
+  dismissToast: () => void;
   retryLastAnalysis: () => Promise<void>;
   clearCurrentCall: () => void;
   submitFeedback: (
@@ -163,6 +173,25 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [backendOffline, setBackendOffline] = useState<boolean>(false);
   const [isLivenessModalOpen, setLivenessModalOpen] = useState<boolean>(false);
   const [isTechnicalDrawerOpen, setTechnicalDrawerOpen] = useState<boolean>(false);
+  const [toast, setToast] = useState<ToastNotification | null>(null);
+  const toastTimerRef = React.useRef<number | null>(null);
+  const dismissToast = useCallback(() => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToast(null);
+  }, []);
+  const showToast = useCallback((t: Omit<ToastNotification, "id">) => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    const id = Date.now();
+    setToast({ id, ...t });
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast((prev) => (prev?.id === id ? null : prev));
+    }, 4500);
+  }, []);
   const lastAudioParamsRef = React.useRef<{
     file?: Blob;
     filename?: string;
@@ -347,8 +376,16 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   );
 
   const executeCallAction = useCallback(
-    async (action: string, note = "") => {
-      if (!currentCall) return;
+    async (action: string, note = "", callIdOverride?: string): Promise<CallSession | null> => {
+      const targetCallId = callIdOverride || currentCall?.call_id;
+      if (!targetCallId) {
+        showToast({
+          variant: "warning",
+          title: "No Active Call",
+          message: "Start or analyze a call before running operator actions.",
+        });
+        return null;
+      }
       if (action === "CHALLENGE" || action === "STEP_UP_CHALLENGE") {
         setLivenessModalOpen(true);
       } else if (action === "PAUSE_BOT") {
@@ -357,16 +394,31 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         botGuard.transferToHuman();
       }
       try {
-        await aegisApi.postCallAction(currentCall.call_id, action, note);
-        const refreshed = await aegisApi.getCall(currentCall.call_id);
-        setCurrentCall(refreshed);
-        await aegisApi.getCallReport(currentCall.call_id).catch(() => null);
+        await aegisApi.postCallAction(targetCallId, action, note);
+        const refreshed = await aegisApi.getCall(targetCallId);
+        if (!callIdOverride || currentCall?.call_id === targetCallId) {
+          setCurrentCall(refreshed);
+        }
+        await aegisApi.getCallReport(targetCallId).catch(() => null);
         await Promise.all([refreshCalls(), refreshReports()]);
+        showToast({
+          variant: action === "TERMINATE_CALL" || action === "BLOCK_CALL" ? "error" : action === "ALLOW" ? "success" : "info",
+          title: `Action Executed: ${action}`,
+          message: note || `Updated call ${targetCallId} and recorded audit entry.`,
+        });
+        return refreshed;
       } catch (err) {
-        setError(err as ExtendedApiError);
+        const apiErr = err as ExtendedApiError;
+        setError(apiErr);
+        showToast({
+          variant: "error",
+          title: `Action Failed: ${action}`,
+          message: apiErr?.message || "Backend call action failed.",
+        });
+        return null;
       }
     },
-    [currentCall, botGuard, refreshCalls, refreshReports]
+    [currentCall, botGuard, refreshCalls, refreshReports, showToast]
   );
 
   const submitFeedback = useCallback(
@@ -441,6 +493,9 @@ export const AnalysisProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         runScenario,
         analyzeLiveAudio,
         executeCallAction,
+        toast,
+        showToast,
+        dismissToast,
         retryLastAnalysis,
         clearCurrentCall,
         submitFeedback,

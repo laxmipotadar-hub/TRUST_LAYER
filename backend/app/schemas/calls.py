@@ -63,6 +63,8 @@ class SpeakerIdentityResult(BaseModel):
     match_confidence: Optional[float] = Field(default=None, ge=-1, le=1)
     claimed_customer_id: str
     matched_customer_name: Optional[str] = None
+    provider_speaker_id: Optional[str] = None
+    decision: Optional[str] = None
     enrolled: bool = True
     skip_reason: Optional[str] = None
     similarity_tier: Optional[str] = None

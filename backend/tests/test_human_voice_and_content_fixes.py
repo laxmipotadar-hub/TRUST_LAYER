@@ -35,9 +35,10 @@ def _make_wav_bytes(duration_sec: float = 5.0, sample_rate: int = 16000) -> byte
 def _clean(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(settings, "detectif_api_key", "")
-    monkeypatch.setattr(settings, "gemini_api_key", "")
+    monkeypatch.setattr(settings, "groq_api_key", "")
     client.post("/api/settings", json={"app_mode": "DEMO", "cache_enabled": False})
     yield
+    repo.delete_voiceprint("VP-LIVE-REAL99")
     cache_service.clear()
 
 
@@ -116,7 +117,7 @@ def test_fix2_aletheia_real_high_confidence_never_flags_fake() -> None:
     assert body["session"]["voice_authenticity"]["raw_payload"]["result"]["verdict"] == "real"
 
 
-def test_fix3_fix4_missing_gemini_returns_unavailable_and_renormalizes_heuristic() -> None:
+def test_fix3_fix4_missing_groq_returns_unavailable_and_renormalizes_heuristic() -> None:
     wav_5s = _make_wav_bytes(5.0, sample_rate=16000)
     ale_resp = MagicMock(status_code=200)
     ale_resp.raise_for_status = MagicMock()
@@ -153,51 +154,62 @@ def test_fix3_fix4_missing_gemini_returns_unavailable_and_renormalizes_heuristic
     assert body["decision"] == "STEP_UP"
 
 
-def test_fix3_gemini_multimodal_audio_transcription_parallel() -> None:
+def test_fix3_groq_whisper_audio_transcription_parallel() -> None:
     wav_5s = _make_wav_bytes(5.0, sample_rate=16000)
     ale_resp = MagicMock(status_code=200)
     ale_resp.raise_for_status = MagicMock()
     ale_resp.json.return_value = {
-        "request_id": "req_gem_asr",
+        "request_id": "req_groq_asr",
         "result": {"verdict": "real", "score": 0.04, "segments": []},
     }
-    gem_resp = MagicMock(status_code=200)
-    gem_resp.raise_for_status = MagicMock()
-    gem_resp.json.return_value = {
-        "candidates": [
+    models_resp = MagicMock(status_code=200)
+    models_resp.raise_for_status = MagicMock()
+    models_resp.json.return_value = {"data": [{"id": "openai/gpt-oss-120b"}]}
+
+    stt_resp = MagicMock(status_code=200)
+    stt_resp.raise_for_status = MagicMock()
+    stt_resp.json.return_value = {
+        "text": "Please confirm my branch transfer today.",
+        "language": "en",
+        "segments": [],
+    }
+    llm_resp = MagicMock(status_code=200)
+    llm_resp.raise_for_status = MagicMock()
+    llm_resp.json.return_value = {
+        "choices": [
             {
-                "content": {
-                    "parts": [
+                "message": {
+                    "content": json.dumps(
                         {
-                            "text": json.dumps(
-                                {
-                                    "transcript": "Please confirm my branch transfer today.",
-                                    "scam_risk_score": 12,
-                                    "behavioral_pressure_score": 8,
-                                    "detected_patterns": [],
-                                    "pressure_tactics": [],
-                                    "evidence": [],
-                                    "explanation": "Normal customer question.",
-                                    "recommended_action": "Proceed.",
-                                }
-                            )
+                            "scam_script_risk": 12,
+                            "manipulation_risk": 8,
+                            "tactics": [],
+                            "summary": "Normal customer question.",
                         }
-                    ]
+                    )
                 }
             }
         ]
     }
 
-    async def route_post(url: str, **kwargs):
-        return ale_resp if "deepfake" in url else gem_resp
+    async def route_get(url: str, **kwargs):  # noqa: ARG001
+        return models_resp
+
+    async def route_post(url: str, **kwargs):  # noqa: ARG001
+        if "deepfake" in url:
+            return ale_resp
+        if "audio/transcriptions" in url:
+            return stt_resp
+        return llm_resp
 
     mc = AsyncMock()
     mc.__aenter__.return_value = mc
+    mc.get.side_effect = route_get
     mc.post.side_effect = route_post
 
     with (
         patch.object(settings, "detectif_api_key", "dtf_test_asr"),
-        patch.object(settings, "gemini_api_key", "gem_test_asr"),
+        patch.object(settings, "groq_api_key", "gsk_test_asr"),
         patch("httpx.AsyncClient", return_value=mc),
     ):
         resp = client.post(

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { Mic, StopCircle, Upload, RotateCcw } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { copy } from "../../copy";
-import { useRecorder } from "../../lib/audio";
+import { transcodeBlobToWav16k, useRecorder } from "../../lib/audio";
 import { formatDuration } from "../../lib/format";
 
 export interface SampleValue {
@@ -29,8 +29,8 @@ export const SampleRecorder: React.FC<SampleRecorderProps> = ({
   const [durationError, setDurationError] = useState<string | null>(null);
 
   const validateAndSet = (blob: Blob, url: string, duration: number, name: string) => {
-    if (requiredDuration && (duration < 20 || duration > 60)) {
-      setDurationError(copy.enroll.durationRuleError);
+    if (requiredDuration && (duration < 15 || duration > 60)) {
+      setDurationError("Enrollment audio must be 15–60 seconds (DetectifAI Eidos minimum: 15s total / 10s speech).");
       onChange(null);
       return;
     }
@@ -45,18 +45,28 @@ export const SampleRecorder: React.FC<SampleRecorderProps> = ({
     }
   };
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
-    const url = URL.createObjectURL(file);
-    const audioEl = new Audio(url);
-    audioEl.onloadedmetadata = () => {
-      const dur = isFinite(audioEl.duration) ? audioEl.duration : 24;
-      validateAndSet(file, url, dur, file.name);
-    };
-    audioEl.onerror = () => {
-      validateAndSet(file, url, 24, file.name);
-    };
+    try {
+      const converted = await transcodeBlobToWav16k(file);
+      const wavFile = new File([converted.blob], file.name.replace(/\.[^.]+$/, ".wav"), {
+        type: "audio/wav",
+      });
+      const url = URL.createObjectURL(wavFile);
+      validateAndSet(wavFile, url, converted.quality.durationSeconds, wavFile.name);
+    } catch {
+      const url = URL.createObjectURL(file);
+      const audioEl = new Audio(url);
+      audioEl.onloadedmetadata = () => {
+        const dur = isFinite(audioEl.duration) ? audioEl.duration : 24;
+        validateAndSet(file, url, dur, file.name);
+      };
+      audioEl.onerror = () => {
+        validateAndSet(file, url, 24, file.name);
+      };
+    }
   };
 
   const progressPct = Math.min(100, Math.round((recorder.elapsedSeconds / 30) * 100));

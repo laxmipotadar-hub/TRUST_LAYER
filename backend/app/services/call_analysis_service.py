@@ -28,7 +28,11 @@ from app.schemas import (
 )
 from app.services.aletheia_service import detect_deepfake_aletheia
 from app.services.cache_service import cache_service
-from app.services.content_analysis_service import analyze_call_content
+from app.services.content_analysis_service import (
+    finalize_content_after_transcribe,
+    load_cached_content_evaluation,
+    transcribe,
+)
 from app.services.eidos_service import (
     EIDOS_VERIFY_COST_CREDITS,
     NEUTRAL_UNENROLLED_SCORE,
@@ -185,7 +189,7 @@ async def analyze_scenario_call(scenario_id: str) -> UnifiedCallAnalysisResponse
             "liveness": "CACHED_FIXTURE",
         }
     else:
-        # REAL mode running a scenario (no raw audio stream -> transcript goes to Gemini/fallback,
+        # REAL mode running a scenario (no raw audio stream -> transcript goes to Groq LLM/fallback,
         # while cached scenario audio metrics remain clearly marked CACHED ANALYSIS).
         analysis_mode = "REAL"
         joined_caller = " ".join(seg.text for seg in scenario.transcript if seg.speaker == "CALLER")
@@ -278,8 +282,18 @@ async def analyze_call_unified(
     effective_transcript = transcript_text.strip()
 
     if mode == "REAL":
-        async def _no_audio_aletheia():
+        async def _none():
             return None
+
+        cached_content = (
+            load_cached_content_evaluation(
+                audio_bytes=audio_bytes,
+                transcript_text=transcript_text,
+                call_id=call_id,
+            )
+            if audio_bytes and not bypass_cache
+            else None
+        )
 
         ale_coro = (
             detect_deepfake_aletheia(
@@ -290,16 +304,28 @@ async def analyze_call_unified(
                 call_id=call_id,
             )
             if audio_bytes
-            else _no_audio_aletheia()
+            else _none()
         )
-        content_coro = analyze_call_content(
-            audio_bytes=audio_bytes,
-            transcript_text=transcript_text,
-            analysis_mode="REAL",
-            bypass_cache=bypass_cache,
-            call_id=call_id,
+        stt_coro = (
+            transcribe(audio_bytes, filename=filename, call_id=call_id)
+            if (audio_bytes and not transcript_text.strip() and cached_content is None)
+            else _none()
         )
-        aletheia_eval, content_eval = await asyncio.gather(ale_coro, content_coro)
+        # Parallel orchestration: Aletheia detect + Groq Whisper transcribe simultaneously
+        aletheia_eval, stt_eval = await asyncio.gather(ale_coro, stt_coro)
+
+        content_eval = (
+            cached_content
+            if cached_content is not None
+            else await finalize_content_after_transcribe(
+                audio_bytes=audio_bytes,
+                transcript_text=transcript_text,
+                stt_result=stt_eval,
+                analysis_mode="REAL",
+                bypass_cache=bypass_cache,
+                call_id=call_id,
+            )
+        )
 
         if aletheia_eval is not None:
             voice = aletheia_eval.result
@@ -336,36 +362,34 @@ async def analyze_call_unified(
             eidos_status = "SKIPPED"
             credits_saved += EIDOS_VERIFY_COST_CREDITS
         else:
-            has_live_voice_id = (
-                enrolled_vp is not None
-                and enrolled_vp.status == "ACTIVE"
-                and enrolled_vp.enrollment_source == "REAL ANALYSIS"
-                and bool(enrolled_vp.provider_speaker_ref)
-                and not str(enrolled_vp.provider_speaker_ref).startswith(("eidos-ref-", "sim-"))
+            eidos_eval = await verify_speaker_eidos(
+                audio_bytes,
+                claimed_customer_id,
+                filename=filename,
+                bypass_cache=bypass_cache,
+                call_id=call_id,
             )
-            if execution_mode == "LIVE" and not has_live_voice_id:
+            if execution_mode == "LIVE" and eidos_eval.model_status == "UNENROLLED":
                 identity = SpeakerIdentityResult(
                     score=None,
                     match_confidence=None,
                     claimed_customer_id=claimed_customer_id,
                     matched_customer_name=None,
+                    provider_speaker_id=None,
+                    decision="SKIPPED",
                     enrolled=False,
                     skip_reason="no_voice_id",
                     similarity_tier="unavailable",
                     status="skipped",
                     provenance="REAL ANALYSIS",
-                    detail="Skipped — No live Voice ID enrolled for claimed customer.",
+                    detail=(
+                        f"Skipped: customer '{claimed_customer_id}' has no active voiceprint record "
+                        f"in the local repository."
+                    ),
                     cost_credits=0.0,
                 )
                 eidos_status = "SKIPPED"
             else:
-                eidos_eval = await verify_speaker_eidos(
-                    audio_bytes,
-                    claimed_customer_id,
-                    filename=filename,
-                    bypass_cache=bypass_cache,
-                    call_id=call_id,
-                )
                 identity = eidos_eval.result
                 eidos_status = eidos_eval.model_status
 
@@ -411,14 +435,24 @@ async def analyze_call_unified(
         }
     elif mode == "CACHED":
         # Strict CACHE lookup: returns stored responses if found, otherwise honest CACHE_MISS
-        ale_key = (
-            cache_service.compute_request_hash("aletheia", {"use_sliding_chunks": False}, audio_bytes=audio_bytes)
-            if audio_bytes
-            else None
-        )
-        cached_ale = cache_service.get(ale_key) if ale_key else None
+        cached_ale = None
+        if audio_bytes:
+            for sliding_opt in (False, True):
+                ale_key = cache_service.compute_request_hash(
+                    "aletheia", {"use_sliding_chunks": sliding_opt}, audio_bytes=audio_bytes
+                )
+                cached_ale = cache_service.get(ale_key)
+                if cached_ale and isinstance(cached_ale.get("payload"), dict):
+                    break
         if cached_ale and isinstance(cached_ale.get("payload"), dict):
-            voice = VoiceAuthenticityResult(**{**cached_ale["payload"], "provenance": "CACHED ANALYSIS", "cache_hit": True})
+            voice = VoiceAuthenticityResult(
+                **{
+                    **cached_ale["payload"],
+                    "provenance": "CACHED ANALYSIS",
+                    "cache_hit": True,
+                    "cost_credits": 0.0,
+                }
+            )
             aletheia_status = "CACHED"
         else:
             voice = VoiceAuthenticityResult(
@@ -480,11 +514,26 @@ async def analyze_call_unified(
             ),
             provenance="CACHED ANALYSIS",
         )
-        scam = await analyze_scam_transcript(transcript_text, analysis_mode="CACHED")
+        cached_groq = load_cached_content_evaluation(
+            audio_bytes=audio_bytes,
+            transcript_text=transcript_text,
+            call_id=call_id,
+        )
+        if cached_groq is not None:
+            scam = cached_groq.scam
+            effective_transcript = cached_groq.transcript
+            cached_manip = cached_groq.manipulation
+            cached_asr_st = cached_groq.asr_status
+        else:
+            scam = await analyze_scam_transcript(transcript_text, analysis_mode="CACHED")
+            cached_manip = None
+            cached_asr_st = "OK" if transcript_text.strip() else "UNAVAILABLE"
         model_status = {
             "aletheia": aletheia_status,
             "eidos": eidos_status,
-            "scam_analysis": "CACHED" if scam.cache_hit else "FALLBACK",
+            "asr": cached_asr_st,
+            "scam_analysis": "CACHED" if scam.cache_hit else ("UNAVAILABLE" if scam.status == "UNAVAILABLE" else "FALLBACK"),
+            "manipulation": "CACHED" if (cached_manip and scam.cache_hit) else ("UNAVAILABLE" if not effective_transcript else "OK"),
             "liveness": "CACHED" if aletheia_status == "CACHED" else "CACHE_MISS",
         }
     else:
@@ -553,10 +602,14 @@ async def analyze_call_unified(
     manipulation = (
         content_eval.manipulation
         if mode == "REAL"
-        else extract_manipulation_analysis(
-            effective_transcript,
-            transcript_segments=transcript_segments if effective_transcript else None,
-            provenance="REAL ANALYSIS" if effective_exec_mode == "LIVE" else scam.provenance,
+        else (
+            cached_manip
+            if (mode == "CACHED" and "cached_manip" in locals() and cached_manip is not None)
+            else extract_manipulation_analysis(
+                effective_transcript,
+                transcript_segments=transcript_segments if effective_transcript else None,
+                provenance="REAL ANALYSIS" if effective_exec_mode == "LIVE" else scam.provenance,
+            )
         )
     )
     if effective_exec_mode == "CACHED":

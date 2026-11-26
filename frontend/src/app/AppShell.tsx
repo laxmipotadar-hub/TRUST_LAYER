@@ -13,6 +13,10 @@ import {
   FileSearch,
   Sliders,
   Settings,
+  CheckCircle2,
+  AlertTriangle,
+  Info,
+  X,
 } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import { Banner } from "../components/ui/Banner";
@@ -23,7 +27,7 @@ import type { ExecutionMode } from "../types";
 export const AppShell: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { executionMode, setExecutionMode, health, credits, backendOffline } = useAnalysis();
+  const { executionMode, setExecutionMode, health, credits, backendOffline, toast, dismissToast } = useAnalysis();
 
   const getPageTitle = () => {
     if (location.pathname.startsWith("/reports")) return copy.reports.pageTitle;
@@ -205,6 +209,42 @@ export const AppShell: React.FC = () => {
           </div>
         </main>
       </div>
+
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-5 right-5 z-50 max-w-sm rounded-xl border p-4 shadow-lg flex items-start gap-3 ${
+            toast.variant === "success"
+              ? "bg-[var(--decision-continue-tint)] border-[var(--decision-continue-border)] text-[var(--decision-continue-text)]"
+              : toast.variant === "error"
+              ? "bg-[var(--decision-endcall-tint)] border-[var(--decision-endcall-border)] text-[var(--decision-endcall-text)]"
+              : toast.variant === "warning"
+              ? "bg-[var(--decision-stepup-tint)] border-[var(--decision-stepup-border)] text-[var(--decision-stepup-text)]"
+              : "bg-[var(--surface)] border-[var(--brand-steel)] text-[var(--text-primary)]"
+          }`}
+        >
+          {toast.variant === "success" ? (
+            <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" />
+          ) : toast.variant === "error" || toast.variant === "warning" ? (
+            <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+          ) : (
+            <Info className="w-5 h-5 shrink-0 mt-0.5 text-[var(--brand-steel)]" />
+          )}
+          <div className="min-w-0 flex-1 text-[14px]">
+            <p className="font-bold">{toast.title}</p>
+            <p className="opacity-90">{toast.message}</p>
+          </div>
+          <button
+            type="button"
+            onClick={dismissToast}
+            aria-label="Close notification"
+            className="p-1 rounded hover:bg-black/5 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

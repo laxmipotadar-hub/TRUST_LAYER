@@ -330,8 +330,7 @@ async def detect_deepfake_aletheia(
         latency_ms=round(total_latency_ms, 2),
         raw_payload=raw_responses[-1] if len(raw_responses) == 1 else {"chunks": raw_responses},
     )
-    if not bypass_cache:
-        cache_service.set(cache_key, "aletheia", normalized.model_dump())
+    cache_service.set(cache_key, "aletheia", normalized.model_dump())
     if call_id:
         record_operation(
             operation_id=last_operation_id or f"op_ale_{uuid4().hex[:8]}",

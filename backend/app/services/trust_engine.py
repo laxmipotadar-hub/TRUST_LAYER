@@ -255,7 +255,7 @@ def calculate_trust_score(
         FactorContribution(
             key="scam_safety",
             label="Scam-Script Safety",
-            layer_name="Layer 3 — Scam-Script Risk (Gemini / Rule Engine)",
+            layer_name="Layer 3 — Scam-Script Risk (Groq / Rule Engine)",
             input_label="Scam Risk Score",
             input_value=clamped_scam_risk,
             raw_score=scam_safety,
@@ -431,6 +431,16 @@ def calculate_trust_score(
             decision_reason = "High risk detected without enrolled Voice ID."
             action = decision_reason
         drivers.insert(0, "Eidos skipped: no live Voice ID enrolled")
+    # Groq analysis may ONLY tighten a SAFE/ALLOW decision (cap CONTINUE at STEP_UP); never softens a fake verdict
+    elif final_decision == "SAFE" and (
+        (clamped_scam_risk is not None and clamped_scam_risk >= 45.0)
+        or (clamped_pressure is not None and clamped_pressure >= 50.0)
+    ):
+        final_decision = "CAUTION"
+        mapped_decision = "STEP_UP"
+        decision_reason = "Groq script/manipulation signals tightened decision from ALLOW to STEP_UP."
+        action = decision_reason
+        drivers.insert(0, decision_reason)
     else:
         if not drivers:
             drivers.append("All four trust layers and Challenge Liveness within SAFE thresholds")

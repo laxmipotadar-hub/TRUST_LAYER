@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Mic, Upload, FileAudio, StopCircle, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
@@ -28,6 +28,16 @@ export interface ClipBarProps {
 
 const MIN_ALETHEIA_SECONDS = 4.1;
 
+const isLiveVoiceprint = (vp: VoiceprintRecord): boolean => {
+  const sid = (vp.provider_speaker_id || vp.provider_speaker_ref || "").trim();
+  return (
+    vp.status === "ACTIVE" &&
+    Boolean(sid) &&
+    !sid.startsWith("sim-") &&
+    !sid.startsWith("eidos-ref-")
+  );
+};
+
 export const ClipBar: React.FC<ClipBarProps> = ({
   executionMode,
   activeScenarioId,
@@ -39,9 +49,38 @@ export const ClipBar: React.FC<ClipBarProps> = ({
 }) => {
   const isLive = executionMode === "LIVE";
   const [showCustom, setShowCustom] = useState(isLive);
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string>(
-    voiceprints.find((v) => v.status === "ACTIVE")?.customer_id || "CUST-4821-MARCUS"
-  );
+
+  // Deduplicate active customers by customer_id, always preferring a live REAL ANALYSIS voiceprint
+  const uniqueActiveVoiceprints = useMemo(() => {
+    const byCustomer = new Map<string, VoiceprintRecord>();
+    for (const vp of voiceprints) {
+      if (vp.status !== "ACTIVE") continue;
+      const existing = byCustomer.get(vp.customer_id);
+      if (!existing || (!isLiveVoiceprint(existing) && isLiveVoiceprint(vp))) {
+        byCustomer.set(vp.customer_id, vp);
+      }
+    }
+    return Array.from(byCustomer.values());
+  }, [voiceprints]);
+
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>(() => {
+    const liveDefault = uniqueActiveVoiceprints.find(isLiveVoiceprint);
+    return liveDefault?.customer_id || uniqueActiveVoiceprints[0]?.customer_id || "CUST-4821-MARCUS";
+  });
+
+  useEffect(() => {
+    if (uniqueActiveVoiceprints.length === 0) return;
+    const hasCurrent = uniqueActiveVoiceprints.some((v) => v.customer_id === selectedCustomerId);
+    const currentIsLive = uniqueActiveVoiceprints.some(
+      (v) => v.customer_id === selectedCustomerId && isLiveVoiceprint(v)
+    );
+    if (!hasCurrent || (isLive && !currentIsLive && selectedCustomerId === "CUST-4821-MARCUS")) {
+      const preferred =
+        (isLive ? uniqueActiveVoiceprints.find(isLiveVoiceprint) : undefined) ||
+        uniqueActiveVoiceprints[0];
+      if (preferred) setSelectedCustomerId(preferred.customer_id);
+    }
+  }, [uniqueActiveVoiceprints, selectedCustomerId, isLive]);
   const [transcriptText, setTranscriptText] = useState("");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedMeta, setUploadedMeta] = useState<{
@@ -144,7 +183,7 @@ export const ClipBar: React.FC<ClipBarProps> = ({
   const handleAnalyzeCustom = () => {
     const audio = uploadedFile || recordedAudio?.blob;
     if ((!audio && !transcriptText.trim()) || isLoading || clipTooShort) return;
-    const selectedVp = voiceprints.find((v) => v.customer_id === selectedCustomerId);
+    const selectedVp = uniqueActiveVoiceprints.find((v) => v.customer_id === selectedCustomerId);
     onAnalyzeAudio({
       file: audio || undefined,
       filename: uploadedFile?.name || "mic_capture_16k.wav",
@@ -233,13 +272,12 @@ export const ClipBar: React.FC<ClipBarProps> = ({
                 onChange={(e) => setSelectedCustomerId(e.target.value)}
                 className="w-full px-3 py-2 border border-[var(--border)] rounded-lg text-[14px] bg-[var(--surface)] text-[var(--text-primary)]"
               >
-                {voiceprints
-                  .filter((vp) => vp.status === "ACTIVE")
-                  .map((vp) => (
-                    <option key={vp.voiceprint_id} value={vp.customer_id}>
-                      {vp.customer_name} ({vp.customer_id})
-                    </option>
-                  ))}
+                {uniqueActiveVoiceprints.map((vp) => (
+                  <option key={vp.voiceprint_id} value={vp.customer_id}>
+                    {vp.customer_name} ({vp.customer_id}) ·{" "}
+                    {isLiveVoiceprint(vp) ? "Live Voice ID" : "Demo Only"}
+                  </option>
+                ))}
                 <option value="UNENROLLED-CALLER">Unenrolled Caller</option>
               </select>
             </div>

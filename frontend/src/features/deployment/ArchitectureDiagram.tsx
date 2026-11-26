@@ -63,7 +63,7 @@ export const ArchitectureDiagram: React.FC = () => {
       <Banner variant="warn" title="Proposed Integration Boundary">
         Nodes 1 and 2 (carrier SIP / Bank PBX) represent proposed enterprise telephony integration
         and are not connected to a live bank PBX in this console. Nodes 3 through 5 execute live
-        in this runtime against real DetectifAI & Gemini APIs.
+        in this runtime against real DetectifAI & Groq Whisper + LLM APIs.
       </Banner>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 items-stretch">

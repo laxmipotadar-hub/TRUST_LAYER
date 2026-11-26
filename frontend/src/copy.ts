@@ -280,7 +280,7 @@ export const COPY = {
     customerIdPlaceholder: "e.g. CUST-8831-VALERIA",
     customerNameLabel: "Customer Full Name",
     customerNamePlaceholder: "e.g. Valeria Chen",
-    consentCheckbox: "I confirm the customer has provided explicit biometric consent for voiceprint storage and identity verification in accordance with financial regulations.",
+    consentCheckbox: "I confirm the customer has provided explicit biometric consent for voiceprint storage and identity/content analysis via DetectifAI and Groq in accordance with financial regulations.",
     consentRequiredError: "Explicit customer consent is legally required before enrollment.",
     audioSourceLabel: "Primary Reference Sample (20 to 30 s recommended; 20–60 s required)",
     secondSampleLabel: "Optional Second Audio Sample",

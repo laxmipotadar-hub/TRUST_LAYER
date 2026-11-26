@@ -35,16 +35,25 @@ def log_raw_detectifai_response(
     response: httpx.Response,
 ) -> None:
     """Safely log raw status, non-auth headers, and truncated response body before parsing."""
-    safe_headers = {
-        k: v
-        for k, v in response.headers.items()
-        if k.lower() not in ("authorization", "x-api-key", "set-cookie", "cookie")
-    }
-    body_preview = _sanitize_error_text(response.text[:1024] if response.text else "")
+    raw_headers = getattr(response, "headers", None)
+    safe_headers: dict[str, str] = {}
+    try:
+        items = raw_headers.items() if raw_headers is not None else ()
+        if not isinstance(items, (list, tuple)) and not hasattr(items, "__iter__"):
+            items = ()
+        for k, v in items:
+            ks = str(k)
+            if ks.lower() not in ("authorization", "x-api-key", "set-cookie", "cookie"):
+                safe_headers[ks] = str(v)
+    except Exception:
+        safe_headers = {}
+    raw_text = getattr(response, "text", "")
+    preview_src = raw_text[:1024] if isinstance(raw_text, str) else ""
+    body_preview = _sanitize_error_text(preview_src)
     logger.info(
         "DetectifAI RAW response [%s] status=%s headers=%s body=%s",
         endpoint,
-        response.status_code,
+        getattr(response, "status_code", "?"),
         safe_headers,
         body_preview,
     )
@@ -59,74 +68,161 @@ class ParsedEidosEnroll:
     raw_keys: list[str]
 
 
+@dataclass(frozen=True)
+class ParsedEidosVerify:
+    decision: str  # MATCH | NO_MATCH | normalized lowercase
+    similarity: float
+    operation_id: str
+    credits_used: float
+    duration_seconds: float | None
+    raw_keys: list[str]
+
+
 def parse_eidos_enroll_response(body: object, *, fallback_speaker_id: str = "") -> ParsedEidosEnroll:
     """
     Tolerant parser for POST /v1/speakers/enroll:
-    - Reads payload from body.get("result") or body.get("data") or body
+    - Inspects nested speaker.speaker_id (body["speaker"], result["speaker"], data["speaker"]),
+      plus result, data, and top-level objects
     - Accepts speaker_id or id
-    - Reads operation_id or request_id from body or payload
-    - Detects error bodies even when returned with HTTP 200
-    - Raises ValueError listing received keys if required fields are missing
+    - Reads operation_id or request_id from body or nested objects
+    - Refuses pending/failed/error responses even when HTTP 200
+    - Never fabricates an active enrollment if no provider speaker_id was returned
     """
     if not isinstance(body, dict):
         raise ValueError(f"Expected JSON object from Eidos enroll, got {type(body).__name__}.")
 
     top_keys = sorted(str(k) for k in body.keys())
 
-    # Catch error body returned on HTTP 200
+    # Catch error or non-confirmed status returned on HTTP 200
     if body.get("error"):
         err = body.get("error")
         msg = err.get("message") if isinstance(err, dict) else str(err)
-        raise ValueError(f"DetectifAI returned error payload on HTTP 200: {_sanitize_error_text(str(msg))} (keys={top_keys})")
-    if str(body.get("status", "")).lower() in ("failed", "rejected", "error"):
+        raise ValueError(
+            f"DetectifAI returned error payload on HTTP 200: {_sanitize_error_text(str(msg))} (keys={top_keys})"
+        )
+    raw_status = str(body.get("status", "")).lower()
+    if raw_status in ("failed", "rejected", "error", "pending", "processing"):
         raise ValueError(f"DetectifAI enrollment status='{body.get('status')}' (keys={top_keys})")
 
-    payload = body.get("result")
-    if not isinstance(payload, dict):
-        payload = body.get("data")
-    if not isinstance(payload, dict):
-        payload = body
+    nested_result = body.get("result") if isinstance(body.get("result"), dict) else None
+    nested_data = body.get("data") if isinstance(body.get("data"), dict) else None
+    payload = nested_result or nested_data or body
 
-    payload_keys = sorted(str(k) for k in payload.keys()) if isinstance(payload, dict) else []
-    combined_keys = sorted(set(top_keys + payload_keys))
-
-    speaker_val = (
-        payload.get("speaker_id")
-        or payload.get("id")
-        or body.get("speaker_id")
-        or body.get("id")
+    speaker_obj = (
+        (body.get("speaker") if isinstance(body.get("speaker"), dict) else None)
+        or (payload.get("speaker") if isinstance(payload.get("speaker"), dict) else None)
     )
-    op_val = (
+
+    collected_keys: set[str] = set(top_keys)
+    for d in (nested_result, nested_data, speaker_obj):
+        if isinstance(d, dict):
+            collected_keys.update(str(k) for k in d.keys())
+    combined_keys = sorted(collected_keys)
+
+    speaker_val = None
+    for source in (speaker_obj, nested_result, nested_data, body):
+        if isinstance(source, dict):
+            cand = source.get("speaker_id") or source.get("id")
+            if isinstance(cand, str) and cand.strip():
+                speaker_val = cand.strip()
+                break
+
+    op_val = ""
+    for source in (body, nested_result, nested_data, speaker_obj):
+        if isinstance(source, dict):
+            cand = source.get("operation_id") or source.get("request_id")
+            if isinstance(cand, str) and cand.strip():
+                op_val = cand.strip()
+                break
+
+    if not speaker_val:
+        raise ValueError(
+            f"Missing provider speaker_id ('speaker.speaker_id', 'result.speaker_id', or 'speaker_id') in Eidos enroll response. Received keys: {combined_keys}"
+        )
+
+    credits_raw = None
+    for source in (body, nested_result, nested_data, speaker_obj):
+        if isinstance(source, dict):
+            credits_obj = source.get("credits")
+            if isinstance(credits_obj, dict) and credits_obj.get("charged") is not None:
+                credits_raw = credits_obj.get("charged")
+                break
+            val = source.get("credits_used") or source.get("credits_charged") or source.get("cost_credits")
+            if val is not None:
+                credits_raw = val
+                break
+    if credits_raw is None:
+        credits_raw = 200.0
+
+    samples_raw = None
+    for source in (speaker_obj, nested_result, nested_data, body):
+        if isinstance(source, dict):
+            val = source.get("samples") or source.get("sample_count")
+            if isinstance(val, (int, float)):
+                samples_raw = int(val)
+                break
+
+    return ParsedEidosEnroll(
+        speaker_id=speaker_val,
+        operation_id=op_val,
+        credits_used=float(credits_raw),
+        samples=samples_raw,
+        raw_keys=combined_keys,
+    )
+
+
+def parse_eidos_verify_response(body: object) -> ParsedEidosVerify:
+    """
+    Tolerant parser for POST /v1/speakers/verify:
+    Reads result.decision / result.similarity (plus data or top-level fallbacks) and operation_id.
+    """
+    if not isinstance(body, dict):
+        raise ValueError(f"Expected JSON object from Eidos verify, got {type(body).__name__}.")
+
+    top_keys = sorted(str(k) for k in body.keys())
+    if body.get("error"):
+        err = body.get("error")
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        raise ValueError(f"DetectifAI Eidos error: {_sanitize_error_text(str(msg))} (keys={top_keys})")
+
+    nested_result = body.get("result") if isinstance(body.get("result"), dict) else None
+    nested_data = body.get("data") if isinstance(body.get("data"), dict) else None
+    payload = nested_result or nested_data or body
+
+    combined_keys = sorted(set(top_keys) | set(str(k) for k in payload.keys()))
+    decision_raw = payload.get("decision") or body.get("decision")
+    similarity_raw = payload.get("similarity")
+    if similarity_raw is None:
+        similarity_raw = body.get("similarity")
+
+    if decision_raw is None or similarity_raw is None:
+        raise ValueError(
+            f"Missing required Eidos verify fields ('decision' and 'similarity'). Received keys: {combined_keys}"
+        )
+
+    op_val = str(
         body.get("operation_id")
         or payload.get("operation_id")
         or body.get("request_id")
         or payload.get("request_id")
-    )
-
-    if not speaker_val and op_val and fallback_speaker_id:
-        # Provider returned an operation acknowledgement with operation_id only
-        speaker_val = fallback_speaker_id
-
-    if not speaker_val:
-        raise ValueError(
-            f"Missing required speaker identifier ('speaker_id' or 'id') in Eidos enroll response. Received keys: {combined_keys}"
-        )
-
+        or ""
+    ).strip()
+    credits_obj = body.get("credits") if isinstance(body.get("credits"), dict) else {}
     credits_raw = (
-        body.get("credits_used")
+        credits_obj.get("charged")
+        or body.get("credits_used")
         or body.get("credits_charged")
         or body.get("cost_credits")
         or payload.get("credits_used")
-        or payload.get("credits_charged")
-        or payload.get("cost_credits")
-        or 200.0
+        or 500.0
     )
-    samples_raw = payload.get("samples") or body.get("samples")
-    return ParsedEidosEnroll(
-        speaker_id=str(speaker_val),
-        operation_id=str(op_val or ""),
+    dur_raw = payload.get("duration_seconds") or body.get("duration_seconds")
+    return ParsedEidosVerify(
+        decision=str(decision_raw).strip().lower(),
+        similarity=float(similarity_raw),
+        operation_id=op_val,
         credits_used=float(credits_raw),
-        samples=int(samples_raw) if isinstance(samples_raw, (int, float)) else None,
+        duration_seconds=float(dur_raw) if isinstance(dur_raw, (int, float)) else None,
         raw_keys=combined_keys,
     )
 

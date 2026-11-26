@@ -122,9 +122,10 @@ export const aegisApi = {
 
   async updateSecrets(payload: {
     detectif_api_key?: string;
-    gemini_api_key?: string;
+    groq_api_key?: string;
     detectif_api_base_url?: string;
-    gemini_model?: string;
+    groq_stt_model?: string;
+    groq_llm_model?: string;
   }): Promise<SecretsStatusResponse> {
     return fetchJson<SecretsStatusResponse>("/settings/secrets", {
       method: "POST",
@@ -236,6 +237,12 @@ export const aegisApi = {
     return fetchJson<VoiceprintRecord[]>("/voiceprints");
   },
 
+  async reconcileVoiceprints(): Promise<VoiceprintRecord[]> {
+    return fetchJson<VoiceprintRecord[]>("/voiceprints/reconcile", {
+      method: "POST",
+    });
+  },
+
   async enrollVoiceprintAudio(params: {
     file: Blob;
     customer_id: string;
@@ -244,6 +251,7 @@ export const aegisApi = {
     enrollment_purpose?: string;
     consent_confirmed: boolean;
     sample_duration_sec: number;
+    execution_mode?: ExecutionMode;
   }): Promise<VoiceprintRecord> {
     const form = new FormData();
     form.append("file", params.file, "enroll.wav");
@@ -256,6 +264,7 @@ export const aegisApi = {
     );
     form.append("consent_confirmed", params.consent_confirmed ? "true" : "false");
     form.append("sample_duration_sec", String(params.sample_duration_sec));
+    if (params.execution_mode) form.append("execution_mode", params.execution_mode);
     return fetchJson<VoiceprintRecord>("/voiceprints/enroll-audio", {
       method: "POST",
       body: form,
@@ -266,11 +275,13 @@ export const aegisApi = {
     file?: Blob;
     claimed_customer_id: string;
     simulate_outcome?: "match" | "mismatch";
+    execution_mode?: ExecutionMode;
   }): Promise<VoiceprintVerifyResponse> {
     const form = new FormData();
     if (params.file) form.append("file", params.file, "verify.wav");
     form.append("claimed_customer_id", params.claimed_customer_id);
     form.append("simulate_outcome", params.simulate_outcome || "match");
+    if (params.execution_mode) form.append("execution_mode", params.execution_mode);
     return fetchJson<VoiceprintVerifyResponse>("/voiceprints/verify", {
       method: "POST",
       body: form,

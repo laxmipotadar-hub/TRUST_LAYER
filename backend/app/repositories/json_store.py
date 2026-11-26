@@ -264,6 +264,26 @@ class AegisRepository:
                     timeline = item.setdefault("evidence_timeline", [])
                     is_takeover = action.action == "TRANSFER_TO_HUMAN"
                     is_block = action.action in ("BLOCK_CALL", "FREEZE_ACCOUNT", "TERMINATE_CALL")
+                    if is_block:
+                        item["call_state"] = "VERDICT"
+                        item["decision"] = "END_CALL"
+                        item["verdict"] = "THREAT"
+                        item["band"] = "THREAT"
+                        item["decision_reason"] = action.operator_note or "Call ended by operator."
+                    elif action.action == "ALLOW" and item.get("voice_authenticity", {}).get("verdict") != "fake":
+                        item["call_state"] = "VERDICT"
+                        item["decision"] = "ALLOW"
+                        item["verdict"] = "SAFE"
+                        item["band"] = "SAFE"
+                        item["decision_reason"] = action.operator_note or "Call approved by operator."
+                    elif action.action in ("CHALLENGE", "STEP_UP_CHALLENGE"):
+                        item["call_state"] = "CHALLENGE"
+                        item["decision"] = "STEP_UP"
+                        item["verdict"] = "CAUTION"
+                        item["band"] = "REVIEW"
+                    elif is_takeover:
+                        item["call_state"] = "VERDICT"
+                        item["decision_reason"] = action.operator_note or "Transferred to human specialist."
                     timeline.append(
                         {
                             "id": f"ev-act-{len(actions)}",
@@ -323,19 +343,73 @@ class AegisRepository:
     def list_voiceprints(self) -> list[VoiceprintRecord]:
         with self._lock:
             items: list[dict[str, Any]] = self._read(self._voiceprints_path)
-            return [VoiceprintRecord(**item) for item in items]
+            records: list[VoiceprintRecord] = []
+            for item in items:
+                vp = VoiceprintRecord(**item)
+                ref = (vp.provider_speaker_ref or "").strip()
+                if not vp.provider_speaker_id and ref and not ref.startswith(("sim-", "eidos-ref-")):
+                    vp = vp.model_copy(update={"provider_speaker_id": ref})
+                records.append(vp)
+            return records
+
+    @staticmethod
+    def _is_live_voiceprint_dict(item: dict[str, Any]) -> bool:
+        if item.get("status", "ACTIVE") != "ACTIVE":
+            return False
+        pid = str(item.get("provider_speaker_id") or item.get("provider_speaker_ref") or "").strip()
+        return bool(pid) and not pid.startswith(("sim-", "eidos-ref-"))
 
     def get_voiceprint_by_customer(self, customer_id: str) -> VoiceprintRecord | None:
         with self._lock:
             items: list[dict[str, Any]] = self._read(self._voiceprints_path)
-            for item in items:
-                if item.get("customer_id") == customer_id and item.get("status", "ACTIVE") == "ACTIVE":
-                    return VoiceprintRecord(**item)
-            return None
+            active_matches = [
+                item
+                for item in items
+                if item.get("customer_id") == customer_id and item.get("status", "ACTIVE") == "ACTIVE"
+            ]
+            if not active_matches:
+                return None
+            # Prefer newest LIVE voiceprint (has valid non-placeholder provider_speaker_id / ref),
+            # ranking explicit REAL ANALYSIS highest if multiple live entries exist.
+            live_matches = [item for item in active_matches if self._is_live_voiceprint_dict(item)]
+            real_live_matches = [
+                item
+                for item in live_matches
+                if str(item.get("enrollment_source") or "").strip().upper() == "REAL ANALYSIS"
+            ]
+            chosen = (
+                real_live_matches[-1]
+                if real_live_matches
+                else (live_matches[-1] if live_matches else active_matches[-1])
+            )
+            vp = VoiceprintRecord(**chosen)
+            ref = (vp.provider_speaker_ref or "").strip()
+            if not vp.provider_speaker_id and ref and not ref.startswith(("sim-", "eidos-ref-")):
+                vp = vp.model_copy(update={"provider_speaker_id": ref})
+            return vp
 
     def add_voiceprint(self, record: VoiceprintRecord) -> VoiceprintRecord:
         with self._lock:
             items: list[dict[str, Any]] = self._read(self._voiceprints_path)
+            candidate_pid = str(record.provider_speaker_id or record.provider_speaker_ref or "").strip()
+            is_new_live = (
+                record.status == "ACTIVE"
+                and bool(candidate_pid)
+                and not candidate_pid.startswith(("sim-", "eidos-ref-"))
+            )
+            if is_new_live:
+                # Replace stale SIMULATION or prior ACTIVE duplicates for the same customer_id
+                cleaned: list[dict[str, Any]] = []
+                carried_history: list[dict[str, Any]] = [h.model_dump() for h in record.verification_history]
+                for item in items:
+                    if item.get("customer_id") == record.customer_id and item.get("status", "ACTIVE") == "ACTIVE":
+                        if not carried_history and item.get("verification_history"):
+                            carried_history = list(item.get("verification_history") or [])
+                        continue
+                    cleaned.append(item)
+                items = cleaned
+                if carried_history and not record.verification_history:
+                    record = VoiceprintRecord(**{**record.model_dump(), "verification_history": carried_history})
             items.append(record.model_dump())
             self._write(self._voiceprints_path, items)
             return record

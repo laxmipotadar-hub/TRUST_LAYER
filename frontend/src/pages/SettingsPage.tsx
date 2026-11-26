@@ -11,9 +11,10 @@ export const SettingsPage: React.FC = () => {
   const { settings, secretsStatus, refreshSystem } = useAnalysis();
 
   const [detectifKey, setDetectifKey] = useState("");
-  const [geminiKey, setGeminiKey] = useState("");
+  const [groqKey, setGroqKey] = useState("");
   const [detectifBaseUrl, setDetectifBaseUrl] = useState("");
-  const [geminiModel, setGeminiModel] = useState("");
+  const [groqSttModel, setGroqSttModel] = useState("whisper-large-v3-turbo");
+  const [groqLlmModel, setGroqLlmModel] = useState("llama-3.3-70b-versatile");
 
   const [appMode, setAppMode] = useState<"REAL" | "DEMO">("REAL");
   const [cacheEnabled, setCacheEnabled] = useState(true);
@@ -46,8 +47,9 @@ export const SettingsPage: React.FC = () => {
       setBotGuardEnabled(settings.bot_guard_enabled);
       setBotGuardThreshold(settings.bot_guard_threshold);
       setLanguage(settings.language || "en");
-      setDetectifBaseUrl(settings.detectifai_base_url || "https://platform.detectif.ai/api");
-      setGeminiModel(settings.gemini_model || "gemini-2.0-flash");
+      setDetectifBaseUrl(settings.detectifai_base_url || "https://platform.detectif.ai");
+      setGroqSttModel(settings.groq_stt_model || "whisper-large-v3-turbo");
+      setGroqLlmModel(settings.groq_llm_model || "llama-3.3-70b-versatile");
     }
   }, [settings]);
 
@@ -59,12 +61,13 @@ export const SettingsPage: React.FC = () => {
     try {
       await aegisApi.updateSecrets({
         detectif_api_key: detectifKey.trim() || undefined,
-        gemini_api_key: geminiKey.trim() || undefined,
+        groq_api_key: groqKey.trim() || undefined,
         detectif_api_base_url: detectifBaseUrl.trim() || undefined,
-        gemini_model: geminiModel.trim() || undefined,
+        groq_stt_model: groqSttModel.trim() || undefined,
+        groq_llm_model: groqLlmModel.trim() || undefined,
       });
       setDetectifKey("");
-      setGeminiKey("");
+      setGroqKey("");
       await refreshSystem();
       setStatusMessage("API keys updated in server-only secret store (`data/secrets.local.json`, chmod 0600).");
     } catch (err: unknown) {
@@ -141,7 +144,7 @@ export const SettingsPage: React.FC = () => {
       <div>
         <h1 className="page-title">AEGIS Runtime &amp; Server API Key Settings</h1>
         <p className="body-text">
-          Configure DetectifAI &amp; Gemini API keys (stored exclusively on the backend server),
+          Configure DetectifAI &amp; Groq Whisper + LLM API keys (stored exclusively on the backend server),
           fusion policy, cache controls, and Bot Guard automation.
         </p>
       </div>
@@ -168,8 +171,8 @@ export const SettingsPage: React.FC = () => {
             <Badge variant={secretsStatus?.detectifai_configured ? "success" : "danger"}>
               DetectifAI: {secretsStatus?.detectifai_configured ? `SET (${secretsStatus.detectif_key_hint})` : "NOT SET"}
             </Badge>
-            <Badge variant={secretsStatus?.gemini_configured ? "success" : "warning"}>
-              Gemini: {secretsStatus?.gemini_configured ? `SET (${secretsStatus.gemini_key_hint})` : "NOT SET"}
+            <Badge variant={secretsStatus?.groq_configured ? "success" : "warning"}>
+              Groq Whisper + LLM: {secretsStatus?.groq_configured ? `SET (${secretsStatus.groq_key_hint})` : "NOT SET"}
             </Badge>
           </div>
         </div>
@@ -195,13 +198,13 @@ export const SettingsPage: React.FC = () => {
           </label>
           <label className="block space-y-1.5">
             <span className="text-[14px] font-semibold text-[var(--text-primary)]">
-              Gemini API Key (`GEMINI_API_KEY`, optional)
+              Groq API Key (`GROQ_API_KEY`, Groq Whisper + LLM)
             </span>
             <input
               type="password"
-              value={geminiKey}
-              onChange={(e) => setGeminiKey(e.target.value)}
-              placeholder="Paste Gemini API key to overwrite"
+              value={groqKey}
+              onChange={(e) => setGroqKey(e.target.value)}
+              placeholder="Paste Groq API key to overwrite"
               autoComplete="off"
               className="w-full h-10 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] font-mono text-[14px]"
             />
@@ -219,14 +222,22 @@ export const SettingsPage: React.FC = () => {
           </label>
           <label className="block space-y-1.5">
             <span className="text-[14px] font-semibold text-[var(--text-primary)]">
-              Gemini Model ID
+              Groq STT &amp; LLM Models (`GROQ_STT_MODEL` / `GROQ_LLM_MODEL`)
             </span>
-            <input
-              type="text"
-              value={geminiModel}
-              onChange={(e) => setGeminiModel(e.target.value)}
-              className="w-full h-10 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] font-mono text-[14px]"
-            />
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="text"
+                value={groqSttModel}
+                onChange={(e) => setGroqSttModel(e.target.value)}
+                className="w-full h-10 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] font-mono text-[13px]"
+              />
+              <input
+                type="text"
+                value={groqLlmModel}
+                onChange={(e) => setGroqLlmModel(e.target.value)}
+                className="w-full h-10 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] font-mono text-[13px]"
+              />
+            </div>
           </label>
 
           <div className="md:col-span-2 flex flex-wrap items-center justify-between gap-3 pt-2">
@@ -266,7 +277,7 @@ export const SettingsPage: React.FC = () => {
               onChange={(e) => setAppMode(e.target.value as "REAL" | "DEMO")}
               className="w-full h-10 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[14px]"
             >
-              <option value="REAL">REAL (Live DetectifAI)</option>
+              <option value="REAL">REAL (Live DetectifAI &amp; Groq)</option>
               <option value="DEMO">DEMO (Fixtures Only)</option>
             </select>
           </label>
@@ -334,7 +345,7 @@ export const SettingsPage: React.FC = () => {
             <div>
               <h2 className="section-title">SHA-256 Inference Cache Controls</h2>
               <p className="caption-text">
-                Note: LIVE mode and the Live Demo ALWAYS bypass cache (`FRESH` rows). Cache only applies in CACHED/DEMO replays.
+                DetectifAI calls bypass cache in LIVE mode; Groq audio transcripts/LLM analyses are cached by SHA-256 to avoid duplicate work.
               </p>
             </div>
           </div>

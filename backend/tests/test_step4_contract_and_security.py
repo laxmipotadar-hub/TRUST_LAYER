@@ -78,9 +78,9 @@ def test_live_mode_never_returns_fake_safe_without_detectifai_key() -> None:
 
 
 def test_frontend_source_contains_no_live_secrets() -> None:
-    """Scan frontend/src to confirm zero DetectifAI or Google/Gemini keys exist client-side."""
+    """Scan frontend/src to confirm zero DetectifAI or Groq keys exist client-side."""
     src_root = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src"
-    pattern = re.compile(r"(dtf_live_[A-Za-z0-9_-]{8,}|AIza[0-9A-Za-z_-]{20,})")
+    pattern = re.compile(r"(dtf_live_[A-Za-z0-9_-]{8,}|gsk_[0-9A-Za-z_-]{20,})")
     matches: list[str] = []
     for file_path in src_root.rglob("*"):
         if file_path.is_file():

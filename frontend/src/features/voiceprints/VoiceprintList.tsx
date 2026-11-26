@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { UserCheck, Trash2, Search, Plus, Loader2, ShieldOff } from "lucide-react";
+import { UserCheck, Trash2, Search, Plus, Loader2, ShieldOff, RefreshCw } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
@@ -28,6 +28,21 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
   const [revokeTarget, setRevokeTarget] = useState<VoiceprintRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<VoiceprintRecord | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [reconciling, setReconciling] = useState(false);
+
+  const handleReconcile = async () => {
+    setReconciling(true);
+    setErrorMsg(null);
+    try {
+      const reconciled = await aegisApi.reconcileVoiceprints();
+      setVoiceprints(reconciled);
+      onVoiceprintRevoked();
+    } catch (err) {
+      setErrorMsg((err as ApiError)?.message || "Failed to reconcile DetectifAI speakers.");
+    } finally {
+      setReconciling(false);
+    }
+  };
 
   const loadVoiceprints = async () => {
     try {
@@ -101,9 +116,19 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
             className="w-full pl-9 pr-4 py-2 border border-[var(--border)] rounded-lg text-[14px] bg-[var(--surface)]"
           />
         </div>
-        <Button variant="primary" onClick={onNavigateEnroll} icon={<Plus className="w-4 h-4" />}>
-          {copy.enroll.pageTitle}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            disabled={reconciling}
+            onClick={() => void handleReconcile()}
+            icon={<RefreshCw className={`w-4 h-4 ${reconciling ? "animate-spin" : ""}`} />}
+          >
+            {reconciling ? "Re-syncing..." : "Re-sync from provider"}
+          </Button>
+          <Button variant="primary" onClick={onNavigateEnroll} icon={<Plus className="w-4 h-4" />}>
+            {copy.enroll.pageTitle}
+          </Button>
+        </div>
       </div>
 
       {errorMsg && <ErrorState message={errorMsg} onRetry={loadVoiceprints} />}
@@ -145,7 +170,9 @@ export const VoiceprintList: React.FC<VoiceprintListProps> = ({
                     </td>
                     <td className="py-3 px-4 font-mono">
                       <p>{vp.voiceprint_id}</p>
-                      <p className="text-[var(--text-muted)]">{vp.provider_speaker_ref || "—"}</p>
+                      <p className="text-[var(--text-muted)]">
+                        {vp.provider_speaker_id || vp.provider_speaker_ref || "—"}
+                      </p>
                     </td>
                     <td className="py-3 px-4">{formatDate(vp.enrolled_at)}</td>
                     <td className="py-3 px-4">

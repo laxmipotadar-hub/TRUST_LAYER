@@ -78,7 +78,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({
     <Card variant={config.variant} className={`!p-5 space-y-3 ${className}`}>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/10 pb-2">
         <span className="caption-text font-medium text-[var(--text-secondary)]">
-          {copy.app.footerPower} · Fusion Band: <strong>{band}</strong>
+          {copy.app.footerPower} · DetectifAI and Groq · Fusion Band: <strong>{band}</strong>
         </span>
         <ModeBadge mode={mode} />
       </div>

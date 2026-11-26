@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Shield, Database, CheckCircle2, Copy, Check, Download, Flame, RefreshCw } from "lucide-react";
+import { Shield, Database, Copy, Check, Download, Flame, RefreshCw, ShieldCheck } from "lucide-react";
 import { Card } from "../../components/ui/Card";
 import { Button } from "../../components/ui/Button";
 import { Badge } from "../../components/ui/Badge";
@@ -13,7 +13,7 @@ import { useAnalysis } from "../../context/AnalysisContext";
 import type { ApiError, UsageSummaryResponse } from "../../types";
 
 export const UsageDashboard: React.FC = () => {
-  const { executionMode } = useAnalysis();
+  const { executionMode, credits, refreshSystem } = useAnalysis();
   const [usage, setUsage] = useState<UsageSummaryResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -23,7 +23,7 @@ export const UsageDashboard: React.FC = () => {
     try {
       setIsLoading(true);
       setErrorMsg(null);
-      const data = await aegisApi.getUsage(true);
+      const [data] = await Promise.all([aegisApi.getUsage(true), refreshSystem()]);
       setUsage(data);
     } catch (err) {
       const apiErr = err as ApiError;
@@ -31,16 +31,18 @@ export const UsageDashboard: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [refreshSystem]);
 
   useEffect(() => {
     void loadUsage();
     if (executionMode !== "LIVE") return;
     const timer = window.setInterval(() => {
-      void aegisApi.getUsage(false).then(setUsage).catch(() => {});
+      void Promise.all([aegisApi.getUsage(true), refreshSystem()])
+        .then(([data]) => setUsage(data))
+        .catch(() => {});
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [loadUsage, executionMode]);
+  }, [loadUsage, executionMode, refreshSystem]);
 
   const handleCopyOpId = (opId: string) => {
     navigator.clipboard?.writeText(opId);
@@ -48,10 +50,15 @@ export const UsageDashboard: React.FC = () => {
     setTimeout(() => setCopiedId(null), 1500);
   };
 
+  // Share exact same credits hook/service as Header chip, falling back to usage.credit_balance
+  const resolvedBalance = credits?.available ?? usage?.credit_balance ?? null;
+  const resolvedBalanceError = credits?.error || usage?.credit_balance_error || null;
   const creditBalanceDisplay =
-    usage?.credit_balance !== null && usage?.credit_balance !== undefined
-      ? usage.credit_balance.toLocaleString()
+    resolvedBalance !== null && resolvedBalance !== undefined
+      ? resolvedBalance.toLocaleString()
       : copy.states.unavailable;
+
+  const reconciliation = usage?.reconciliation;
 
   return (
     <div className="space-y-6">
@@ -61,7 +68,7 @@ export const UsageDashboard: React.FC = () => {
         </p>
         <div className="flex items-center gap-2">
           <Button variant="secondary" size="sm" onClick={() => void loadUsage()} icon={<RefreshCw className="w-4 h-4" />}>
-            Refresh
+            Refresh &amp; Reconcile
           </Button>
           <a
             href={aegisApi.getUsageCsvUrl()}
@@ -79,54 +86,76 @@ export const UsageDashboard: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="caption-text font-medium">{copy.usage.creditBalance}</span>
+            <span className="caption-text font-medium">Current Balance (Live)</span>
             <Database className="w-5 h-5 text-[var(--brand-navy)]" />
           </div>
-          {isLoading ? <Skeleton className="h-8 w-24" /> : (
+          {isLoading && resolvedBalance === null ? (
+            <Skeleton className="h-8 w-24" />
+          ) : (
             <p className="text-[28px] font-extrabold text-[var(--text-primary)]">{creditBalanceDisplay}</p>
           )}
-          <p className="caption-text">{usage?.credit_balance_error || copy.usage.reportedByDetectifAI}</p>
-        </Card>
-
-        <Card className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="caption-text font-medium">FRESH / Provider Calls</span>
-            <Shield className="w-5 h-5 text-[var(--brand-steel)]" />
-          </div>
-          {isLoading ? <Skeleton className="h-8 w-20" /> : (
-            <p className="text-[28px] font-extrabold text-[var(--text-primary)]">
-              {usage?.fresh_calls ?? 0} fresh
-            </p>
-          )}
           <p className="caption-text">
-            Aletheia {usage?.aletheia_calls ?? 0} · Eidos {usage?.eidos_calls ?? 0} · Gemini {usage?.gemini_calls ?? 0}
+            {resolvedBalanceError ? `Unavailable: ${resolvedBalanceError}` : copy.usage.reportedByDetectifAI}
           </p>
         </Card>
 
         <Card className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="caption-text font-medium">Credit Burn Rate</span>
-            <Flame className="w-5 h-5 text-[var(--decision-stepup-solid)]" />
+            <span className="caption-text font-medium">Provider Calls</span>
+            <Shield className="w-5 h-5 text-[var(--brand-steel)]" />
           </div>
-          {isLoading ? <Skeleton className="h-8 w-20" /> : (
+          {isLoading && !usage ? (
+            <Skeleton className="h-8 w-20" />
+          ) : (
             <p className="text-[28px] font-extrabold text-[var(--text-primary)]">
-              {(usage?.burn_rate_per_call ?? 0).toFixed(1)}
+              {usage?.fresh_calls ?? 0} fresh
             </p>
           )}
-          <p className="caption-text">credits / call ({usage?.total_credits_used ?? 0} total used)</p>
+          <p className="caption-text">
+            Aletheia {usage?.aletheia_calls ?? 0} · Eidos {usage?.eidos_calls ?? 0} · Groq {usage?.groq_calls ?? 0} (no DetectifAI credits)
+          </p>
         </Card>
 
         <Card className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <span className="caption-text font-medium">Cache Hits & Credits Saved</span>
-            <CheckCircle2 className="w-5 h-5 text-[var(--decision-continue-solid)]" />
+            <span className="caption-text font-medium">Credits Used This Session</span>
+            <Flame className="w-5 h-5 text-[var(--decision-stepup-solid)]" />
           </div>
-          {isLoading ? <Skeleton className="h-8 w-20" /> : (
-            <p className="text-[28px] font-extrabold text-[var(--decision-continue-text)]">
-              {usage?.total_credits_saved ?? 0}
+          {isLoading && !usage ? (
+            <Skeleton className="h-8 w-20" />
+          ) : (
+            <p className="text-[28px] font-extrabold text-[var(--text-primary)]">
+              {usage?.total_credits_used ?? 0}
             </p>
           )}
-          <p className="caption-text">{usage?.cache_hits ?? 0} cache hits recorded</p>
+          <p className="caption-text">{(usage?.burn_rate_per_call ?? 0).toFixed(1)} avg credits / call</p>
+        </Card>
+
+        <Card className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="caption-text font-medium">Reconcile vs GET /v1/usage</span>
+            <ShieldCheck className="w-5 h-5 text-[var(--decision-continue-solid)]" />
+          </div>
+          {isLoading && !usage ? (
+            <Skeleton className="h-8 w-24" />
+          ) : (
+            <div className="space-y-1">
+              <Badge
+                variant={
+                  reconciliation?.status === "RECONCILED"
+                    ? "success"
+                    : reconciliation?.status === "PARTIAL"
+                    ? "warning"
+                    : "neutral"
+                }
+              >
+                {reconciliation?.status || "UNAVAILABLE"} ({reconciliation?.matched_count ?? 0} matched)
+              </Badge>
+              <p className="caption-text">
+                {reconciliation?.note || "Run refresh to reconcile with DetectifAI /v1/usage."}
+              </p>
+            </div>
+          )}
         </Card>
       </div>
 
@@ -139,7 +168,9 @@ export const UsageDashboard: React.FC = () => {
         <Card className="!p-0 overflow-hidden">
           <div className="p-4 border-b border-[var(--border)] flex items-center justify-between">
             <h3 className="card-title">{copy.usage.operationsLogTitle}</h3>
-            <span className="caption-text font-mono">{usage?.operations.length || 0} rows</span>
+            <span className="caption-text font-mono">
+              {usage?.operations.length || 0} rows · {usage?.total_credits_saved ?? 0} credits saved by gating
+            </span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-[14px]">
@@ -167,7 +198,9 @@ export const UsageDashboard: React.FC = () => {
                       </button>
                     </td>
                     <td className="py-2.5 px-4">
-                      <span className="font-semibold uppercase">{op.service}</span>{" "}
+                      <span className="font-semibold uppercase">
+                        {op.service === "groq" ? "Groq (no DetectifAI credits)" : op.service}
+                      </span>{" "}
                       <span className="font-mono text-[var(--text-muted)]">{op.endpoint}</span>
                     </td>
                     <td className="py-2.5 px-4">

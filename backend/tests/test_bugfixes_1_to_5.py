@@ -34,9 +34,10 @@ def _make_wav_bytes(duration_sec: float = 5.0, sample_rate: int = 16000) -> byte
 def _reset_state(monkeypatch):
     cache_service.clear()
     monkeypatch.setattr(settings, "detectif_api_key", "")
-    monkeypatch.setattr(settings, "gemini_api_key", "")
+    monkeypatch.setattr(settings, "groq_api_key", "")
     client.post("/api/settings", json={"app_mode": "DEMO", "cache_enabled": False})
     yield
+    repo.delete_voiceprint("VP-LIVE-BUG4")
     cache_service.clear()
 
 
@@ -122,7 +123,22 @@ async def test_bug2_eidos_http_errors_and_live_no_voice_id() -> None:
         assert f"Provider detail for {code}" in info.detail
         assert "secret123" not in info.detail
 
-    # Verify Eidos 404 / 403 through verify_speaker_eidos does not return matched_customer_name
+    # Verify Eidos 404 / 403 through verify_speaker_eidos on a REAL ANALYSIS voiceprint does not return matched_customer_name
+    repo.add_voiceprint(
+        VoiceprintRecord(
+            voiceprint_id="VP-LIVE-BUG2",
+            customer_id="CUST-LIVE-BUG2",
+            customer_name="Live Bug2 Tester",
+            account_tier="Private Wealth",
+            consent_confirmed=True,
+            enrolled_at="2026-11-25T10:00:00Z",
+            sample_duration_sec=16.0,
+            enrollment_source="REAL ANALYSIS",
+            provider_speaker_id="spk_live_bug2",
+            provider_speaker_ref="spk_live_bug2",
+            status="ACTIVE",
+        )
+    )
     resp_403 = httpx.Response(
         403,
         request=httpx.Request("POST", "https://platform.detectif.ai/v1/speakers/verify"),
@@ -131,17 +147,20 @@ async def test_bug2_eidos_http_errors_and_live_no_voice_id() -> None:
     mock_eid = AsyncMock()
     mock_eid.__aenter__.return_value = mock_eid
     mock_eid.post.return_value = resp_403
-    with (
-        patch.object(settings, "detectif_api_key", "dtf_test_key_hidden"),
-        patch("app.services.eidos_service.httpx.AsyncClient", return_value=mock_eid),
-    ):
-        res = await verify_speaker_eidos(wav_5s, "CUST-4821-MARCUS", bypass_cache=True)
-        assert res.model_status == "AUTH_ERROR"
-        assert res.result.status == "error"
-        assert res.result.http_status == 403
-        assert "Missing scope speakers:verify" in res.result.detail
-        assert res.result.matched_customer_name is None
-        assert "dtf_test_key_hidden" not in res.result.detail
+    try:
+        with (
+            patch.object(settings, "detectif_api_key", "dtf_test_key_hidden"),
+            patch("app.services.eidos_service.httpx.AsyncClient", return_value=mock_eid),
+        ):
+            res = await verify_speaker_eidos(wav_5s, "CUST-LIVE-BUG2", bypass_cache=True)
+            assert res.model_status == "AUTH_ERROR"
+            assert res.result.status == "error"
+            assert res.result.http_status == 403
+            assert "Missing scope speakers:verify" in res.result.detail
+            assert res.result.matched_customer_name is None
+            assert "dtf_test_key_hidden" not in res.result.detail
+    finally:
+        repo.delete_voiceprint("VP-LIVE-BUG2")
 
     # In LIVE mode, a seeded-only customer without REAL ANALYSIS enrollment is skipped as no_voice_id
     ale_real_resp = MagicMock(status_code=200)

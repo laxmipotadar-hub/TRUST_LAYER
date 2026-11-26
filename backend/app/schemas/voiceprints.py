@@ -34,7 +34,8 @@ class VoiceprintRecord(BaseModel):
     enrolled_at: str
     revoked_at: Optional[str] = None
     sample_duration_sec: float = Field(..., ge=1.0)
-    enrollment_source: AnalysisProvenance
+    enrollment_source: str = "REAL ANALYSIS"
+    provider_speaker_id: str | None = None
     provider_speaker_ref: str | None = None
     provider_operation_id: str | None = None
     credits_used: Optional[float] = None

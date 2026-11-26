@@ -7,7 +7,12 @@ import httpx
 
 from app.core.config import settings
 from app.repositories.json_store import repo
-from app.schemas.usage import CreditsResponse, UsageSummaryResponse
+from app.schemas.usage import (
+    CreditsResponse,
+    OperationLedgerEntry,
+    ProviderReconciliation,
+    UsageSummaryResponse,
+)
 from app.services.ledger_service import read_ledger
 
 
@@ -64,7 +69,7 @@ async def fetch_provider_usage_snapshot() -> dict | None:
     headers = {"Authorization": f"Bearer {settings.detectif_api_key}"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers, params={"limit": 20})
+            resp = await client.get(url, headers=headers, params={"limit": 50})
             if resp.status_code == 200:
                 data = resp.json()
                 return data if isinstance(data, dict) else None
@@ -73,17 +78,74 @@ async def fetch_provider_usage_snapshot() -> dict | None:
     return None
 
 
+def reconcile_with_provider(
+    entries: list[OperationLedgerEntry],
+    provider_usage: dict | None,
+) -> ProviderReconciliation:
+    """Reconcile local FRESH DetectifAI ledger entries against GET /v1/usage records."""
+    if not provider_usage or not isinstance(provider_usage.get("data"), list):
+        return ProviderReconciliation(
+            status="UNAVAILABLE",
+            note="DetectifAI /v1/usage records unavailable for reconciliation.",
+        )
+
+    provider_records = [item for item in provider_usage["data"] if isinstance(item, dict)]
+    provider_ops = {
+        str(rec.get("operation_id")): rec
+        for rec in provider_records
+        if rec.get("operation_id")
+    }
+    provider_credits_total = round(
+        sum(float(rec.get("credits_charged") or 0.0) for rec in provider_records), 2
+    )
+
+    detectif_local = [
+        e
+        for e in entries
+        if e.mode == "FRESH" and e.service in ("aletheia", "eidos", "enroll")
+    ]
+    matched = [e.operation_id for e in detectif_local if e.operation_id in provider_ops]
+    unmatched = len(detectif_local) - len(matched)
+
+    if not detectif_local:
+        return ProviderReconciliation(
+            status="RECONCILED",
+            matched_count=0,
+            unmatched_local_count=0,
+            provider_record_count=len(provider_records),
+            provider_credits_total=provider_credits_total,
+            matched_operation_ids=[],
+            note=f"DetectifAI /v1/usage active ({len(provider_records)} provider operations returned).",
+        )
+
+    status = "RECONCILED" if unmatched == 0 else "PARTIAL"
+    return ProviderReconciliation(
+        status=status,
+        matched_count=len(matched),
+        unmatched_local_count=unmatched,
+        provider_record_count=len(provider_records),
+        provider_credits_total=provider_credits_total,
+        matched_operation_ids=matched,
+        note=f"Matched {len(matched)} of {len(detectif_local)} local DetectifAI calls against /v1/usage ({len(provider_records)} recent provider rows).",
+    )
+
+
 async def build_usage_summary(include_provider: bool = True) -> UsageSummaryResponse:
     entries = read_ledger(limit=250)
     calls = repo.list_calls(limit=100)
-    credits_res = await fetch_live_credits() if include_provider else CreditsResponse(configured=settings.detectifai_configured)
+    credits_res = (
+        await fetch_live_credits()
+        if include_provider
+        else CreditsResponse(configured=settings.detectifai_configured)
+    )
     provider_usage = await fetch_provider_usage_snapshot() if include_provider else None
+    reconciliation = reconcile_with_provider(entries, provider_usage)
 
     total_used = round(sum(e.cost_credits for e in entries), 2)
     total_saved = round(sum(float(c.credits_saved or 0.0) for c in calls), 2)
     aletheia_calls = sum(1 for e in entries if e.service == "aletheia" and not e.cached)
     eidos_calls = sum(1 for e in entries if e.service == "eidos" and not e.cached)
-    gemini_calls = sum(1 for e in entries if e.service == "gemini" and not e.cached)
+    groq_calls = sum(1 for e in entries if e.service == "groq" and not e.cached)
     cache_hits = sum(1 for e in entries if e.cached or e.mode == "CACHED")
     fresh_calls = sum(1 for e in entries if e.mode == "FRESH")
     call_count = max(len(calls), fresh_calls)
@@ -98,11 +160,12 @@ async def build_usage_summary(include_provider: bool = True) -> UsageSummaryResp
         burn_rate_per_call=burn_rate,
         aletheia_calls=aletheia_calls,
         eidos_calls=eidos_calls,
-        gemini_calls=gemini_calls,
+        groq_calls=groq_calls,
         cache_hits=cache_hits,
         fresh_calls=fresh_calls,
         operations=entries,
         provider_usage_raw=provider_usage,
+        reconciliation=reconciliation,
     )
 
 
@@ -110,7 +173,33 @@ def export_ledger_csv() -> str:
     entries = read_ledger(limit=500)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["operation_id", "call_id", "service", "endpoint", "mode", "status", "cost_credits", "latency_ms", "cached", "timestamp"])
+    writer.writerow(
+        [
+            "operation_id",
+            "call_id",
+            "service",
+            "endpoint",
+            "mode",
+            "status",
+            "cost_credits",
+            "latency_ms",
+            "cached",
+            "timestamp",
+        ]
+    )
     for e in entries:
-        writer.writerow([e.operation_id, e.call_id, e.service, e.endpoint, e.mode, e.status, e.cost_credits, e.latency_ms, e.cached, e.timestamp])
+        writer.writerow(
+            [
+                e.operation_id,
+                e.call_id,
+                e.service,
+                e.endpoint,
+                e.mode,
+                e.status,
+                e.cost_credits,
+                e.latency_ms,
+                e.cached,
+                e.timestamp,
+            ]
+        )
     return buf.getvalue()

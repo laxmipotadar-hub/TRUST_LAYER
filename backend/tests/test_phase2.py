@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.main import app
+from app.repositories.json_store import repo
+from app.schemas import VoiceprintRecord
 from app.services.aletheia_service import (
     detect_deepfake_aletheia,
     inspect_wav_duration_seconds,
@@ -138,7 +140,22 @@ async def test_eidos_unenrolled_neutral_score_and_real_verify() -> None:
     assert unenrolled.model_status == "UNENROLLED"
     assert unenrolled.result.score == NEUTRAL_UNENROLLED_SCORE
 
-    # Enrolled speaker (CUST-4821-MARCUS is seeded) verified via mocked Eidos endpoint
+    # Live-enrolled speaker verified via mocked Eidos endpoint (never sends demo-only fixture ID)
+    repo.add_voiceprint(
+        VoiceprintRecord(
+            voiceprint_id="VP-LIVE-P2",
+            customer_id="CUST-LIVE-P2",
+            customer_name="Live P2 Marcus",
+            account_tier="Private Wealth",
+            consent_confirmed=True,
+            enrolled_at="2026-11-25T10:00:00Z",
+            sample_duration_sec=16.0,
+            enrollment_source="REAL ANALYSIS",
+            provider_speaker_id="spk_live_p2",
+            provider_speaker_ref="spk_live_p2",
+            status="ACTIVE",
+        )
+    )
     mock_verify = MagicMock()
     mock_verify.status_code = 200
     mock_verify.raise_for_status = MagicMock()
@@ -150,31 +167,34 @@ async def test_eidos_unenrolled_neutral_score_and_real_verify() -> None:
     mc.__aenter__.return_value = mc
     mc.post.return_value = mock_verify
 
-    with patch.object(settings, "detectif_api_key", "dtf_test_key"), patch(
-        "app.services.eidos_service.httpx.AsyncClient", return_value=mc
-    ):
-        verified = await verify_speaker_eidos(wav_5s, "CUST-4821-MARCUS")
-        assert verified.model_status == "OK"
-        assert verified.result.score == pytest.approx(91.0)
-        assert verified.result.status == "PASS"
+    try:
+        with patch.object(settings, "detectif_api_key", "dtf_test_key"), patch(
+            "app.services.eidos_service.httpx.AsyncClient", return_value=mc
+        ):
+            verified = await verify_speaker_eidos(wav_5s, "CUST-LIVE-P2")
+            assert verified.model_status == "OK"
+            assert verified.result.score == pytest.approx(91.0)
+            assert verified.result.status == "PASS"
 
-        # Test Eidos enroll endpoint
-        mock_enroll = MagicMock()
-        mock_enroll.status_code = 200
-        mock_enroll.raise_for_status = MagicMock()
-        mock_enroll.json.return_value = {
-            "request_id": "req-eid-enr",
-            "operation_id": "op-eid-enr",
-            "result": {"speaker_id": "CUST-NEW-1"},
-        }
-        mc.post.return_value = mock_enroll
-        enr = await enroll_speaker_eidos(wav_5s, "CUST-NEW-1")
-        assert enr.success is True
-        assert enr.provider_speaker_ref == "CUST-NEW-1"
+            # Test Eidos enroll endpoint
+            mock_enroll = MagicMock()
+            mock_enroll.status_code = 200
+            mock_enroll.raise_for_status = MagicMock()
+            mock_enroll.json.return_value = {
+                "request_id": "req-eid-enr",
+                "operation_id": "op-eid-enr",
+                "result": {"speaker_id": "CUST-NEW-1"},
+            }
+            mc.post.return_value = mock_enroll
+            enr = await enroll_speaker_eidos(wav_5s, "CUST-NEW-1")
+            assert enr.success is True
+            assert enr.provider_speaker_ref == "CUST-NEW-1"
+    finally:
+        repo.delete_voiceprint("VP-LIVE-P2")
 
 
 @pytest.mark.anyio
-async def test_scam_analysis_nine_categories_and_gemini_mock() -> None:
+async def test_scam_analysis_nine_categories_and_groq_mock() -> None:
     transcript = (
         "This is Central Bank Fraud Department. Your account will be frozen immediately! "
         "Do not tell anyone, install AnyDesk, share your password and OTP code, and move funds "
@@ -186,52 +206,46 @@ async def test_scam_analysis_nine_categories_and_gemini_mock() -> None:
     assert contract["fallback_used"] is True
     assert len(contract["detected_patterns"]) == 9
 
-    # Mocked Gemini response in REAL mode
-    gemini_payload = {
-        "candidates": [
+    # Mocked Groq response in REAL mode
+    models_resp = MagicMock(status_code=200)
+    models_resp.raise_for_status = MagicMock()
+    models_resp.json.return_value = {"data": [{"id": "openai/gpt-oss-120b"}]}
+
+    groq_payload = {
+        "choices": [
             {
-                "content": {
-                    "parts": [
+                "message": {
+                    "content": json.dumps(
                         {
-                            "text": json.dumps(
-                                {
-                                    "scam_risk_score": 92,
-                                    "behavioral_pressure_score": 88,
-                                    "detected_patterns": ["OTP requests", "Authority impersonation"],
-                                    "pressure_tactics": ["Fear coercion"],
-                                    "evidence": [
-                                        {
-                                            "phrase": "OTP code",
-                                            "category": "OTP requests",
-                                            "severity": "HIGH",
-                                            "weight": 35,
-                                            "explanation": "Requests one-time password.",
-                                        }
-                                    ],
-                                    "explanation": "Gemini detected high-risk social engineering.",
-                                    "recommended_action": "Block call.",
-                                }
-                            )
+                            "scam_script_risk": 92,
+                            "manipulation_risk": 88,
+                            "tactics": [
+                                {"type": "credential_request", "evidence": "OTP code"},
+                                {"type": "authority", "evidence": "Central Bank Fraud Department"},
+                            ],
+                            "summary": "Groq detected high-risk social engineering.",
                         }
-                    ]
+                    )
                 }
             }
         ]
     }
-    mock_resp = MagicMock()
+    mock_resp = MagicMock(status_code=200)
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = gemini_payload
+    mock_resp.json.return_value = groq_payload
     mc = AsyncMock()
     mc.__aenter__.return_value = mc
+    mc.get.return_value = models_resp
     mc.post.return_value = mock_resp
 
-    with patch.object(settings, "gemini_api_key", "gem_test_key"), patch(
-        "app.services.scam_analysis_service.httpx.AsyncClient", return_value=mc
+    with patch.object(settings, "groq_api_key", "gsk_test_key"), patch(
+        "app.services.content_analysis_service.httpx.AsyncClient", return_value=mc
     ):
         real_scam = await analyze_scam_transcript(transcript, analysis_mode="REAL")
         assert real_scam.provenance == "REAL ANALYSIS"
         assert real_scam.fallback_used is False
         assert real_scam.risk_score == 92.0
+        assert real_scam.behavioral_pressure_score == 50.0
 
 
 def test_unified_analyze_endpoint_never_fakes_safe_on_real_failure() -> None:
@@ -275,10 +289,10 @@ def test_unified_analyze_endpoint_never_fakes_safe_on_real_failure() -> None:
 def test_demo_mode_scenarios_never_call_external_apis() -> None:
     with patch("app.services.aletheia_service.httpx.AsyncClient") as aletheia_http, patch(
         "app.services.eidos_service.httpx.AsyncClient"
-    ) as eidos_http, patch("app.services.scam_analysis_service.httpx.AsyncClient") as scam_http:
+    ) as eidos_http, patch("app.services.content_analysis_service.httpx.AsyncClient") as content_http:
         for sid in ("S1", "S2", "S3", "S4"):
             r = client.post("/api/scenarios/run", json={"scenario_id": sid})
             assert r.status_code == 200
         assert aletheia_http.call_count == 0
         assert eidos_http.call_count == 0
-        assert scam_http.call_count == 0
+        assert content_http.call_count == 0

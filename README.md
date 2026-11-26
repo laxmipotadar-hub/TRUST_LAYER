@@ -6,7 +6,7 @@ AEGIS (**Automated Evaluation & Guard for Identity & Speech**) is a real-time ba
 
 ## Architecture
 
-AEGIS follows a strict backend-first, three-tier security architecture so API credentials (`DETECTIF_API_KEY`, `GEMINI_API_KEY`) never reach the browser:
+AEGIS follows a strict backend-first, three-tier security architecture so API credentials (`DETECTIF_API_KEY`, `GROQ_API_KEY`) never reach the browser:
 
 ```text
 Customer / Microphone / Scenario Stream
@@ -23,7 +23,7 @@ Customer / Microphone / Scenario Stream
       FastAPI Security Layer (Uvicorn :8000)
         ├── Aletheia Service   — 4–120s WAV duration checks, 5s sliding-window deepfake detection
         ├── Eidos Service      — Speaker identity matching (neutral 50.0 baseline if unenrolled)
-        ├── Scam Risk Engine   — Gemini API + 9-category deterministic keyword & coercion fallback
+        ├── Scam Risk Engine   — Groq Whisper + LLM + 9-category deterministic keyword & coercion fallback
         ├── Challenge Engine   — Random nonce phrase + 5-point anti-replay liveness verification
         ├── Trust Engine       — 4-Layer Weighted Composite Trust Score (35% / 30% / 20% / 15%)
         ├── Bot Guard          — Threshold monitoring (<40 or Liveness FAILED) + operator resume lock
@@ -38,7 +38,7 @@ Customer / Microphone / Scenario Stream
 TRUST SCORE =
     ((1 - Synthetic Probability) × 100) × 0.35   [Layer 1: Voice Authenticity — Aletheia]
   + (Speaker Match %)                   × 0.30   [Layer 2: Speaker Identity — Eidos; 50.0 neutral if unenrolled]
-  + (100 - Scam Risk Score)             × 0.20   [Layer 3: Scam Safety — Gemini / deterministic fallback]
+  + (100 - Scam Risk Score)             × 0.20   [Layer 3: Scam Safety — Groq LLM / deterministic fallback]
   + (100 - Behavioral Pressure Score)   × 0.15   [Layer 4: Behavioral Safety — urgency, secrecy, threats]
 ```
 
@@ -68,7 +68,7 @@ TRUST SCORE =
 
 - **Frontend**: React 19, TypeScript, Vite 6, Tailwind CSS v4, React Router v7, Recharts, Lucide React
 - **Backend**: Python, FastAPI, Pydantic v2, Pydantic Settings, HTTPX, Uvicorn
-- **AI Integrations**: DetectifAI (Aletheia Deepfake Detection + Eidos Speaker Verification) and Google Gemini API (transcript social-engineering & coercion analysis)
+- **AI Integrations**: DetectifAI (Aletheia Deepfake Detection + Eidos Speaker Verification) and Groq Cloud (Whisper STT + Llama/GPT-OSS transcript social-engineering & coercion analysis)
 - **Persistence**: Local JSON repositories and SHA-256 request response cache in `data/`
 
 ---
@@ -87,8 +87,9 @@ Variables (read strictly server-side by `backend/app/core/config.py`):
 | --- | --- | --- |
 | `DETECTIF_API_KEY` | `""` | Server-side API key for DetectifAI Aletheia & Eidos |
 | `DETECTIF_API_BASE_URL` | `https://platform.detectif.ai` | Base URL for DetectifAI APIs |
-| `GEMINI_API_KEY` | `""` | Server-side API key for Google Gemini |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model identifier |
+| `GROQ_API_KEY` | `""` | Server-side API key for Groq (Whisper STT + LLM) |
+| `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Groq speech-to-text model identifier |
+| `GROQ_LLM_MODEL` | `llama-3.3-70b-versatile` | Groq LLM model identifier (with live availability fallback) |
 | `APP_MODE` | `DEMO` | `DEMO` (cached scenario fixtures, zero API spend) or `REAL` |
 | `CACHE_ENABLED` | `true` | Enables local SHA-256 API response caching in `data/cache/responses/` |
 
@@ -150,7 +151,7 @@ Ensure header mode is **DEMO** (default; guarantees zero external API consumptio
 
 ## Real API Configuration
 
-1. Set `DETECTIF_API_KEY` and `GEMINI_API_KEY` in root `.env`.
+1. Set `DETECTIF_API_KEY` and `GROQ_API_KEY` in root `.env`.
 2. Restart the FastAPI backend so `Settings` reloads `.env`.
 3. Switch the header toggle from **DEMO** to **REAL** (or submit `analysis_mode=REAL` via **LIVE CALL**).
 4. **Strict Integrity Guarantee**: If `DETECTIF_API_KEY` is missing or an external API call fails/times out in `REAL` mode, AEGIS reports `UNAVAILABLE` and `INCOMPLETE ANALYSIS` honestly—it never fabricates `SAFE` or simulated biometric scores as `REAL ANALYSIS`.

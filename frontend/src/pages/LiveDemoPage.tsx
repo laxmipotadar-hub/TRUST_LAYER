@@ -17,6 +17,8 @@ import {
   Wifi,
   WifiOff,
   Coins,
+  PhoneOff,
+  Clock,
 } from "lucide-react";
 import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
@@ -24,6 +26,7 @@ import { Badge } from "../components/ui/Badge";
 import { Banner } from "../components/ui/Banner";
 import { ModeBadge } from "../components/ui/ModeBadge";
 import { ChallengeModal } from "../features/challenge/ChallengeModal";
+import { OperatorActionsCard } from "../features/analyze/OperatorActionsCard";
 import { useAnalysis } from "../context/AnalysisContext";
 import { aegisApi, LiveCallSocketClient } from "../lib/api";
 import {
@@ -34,6 +37,7 @@ import {
   type AudioRecordingResult,
   type LiveWorkletController,
 } from "../lib/audio";
+import { formatDate } from "../lib/format";
 import type {
   CallReportResponse,
   CallSession,
@@ -62,10 +66,14 @@ export const LiveDemoPage: React.FC = () => {
     executionMode,
     setExecutionMode,
     health,
+    credits: sharedCredits,
+    voiceprints,
+    guardState,
     refreshSystem,
     refreshVoiceprints,
     applyUpdatedCall,
     executeCallAction,
+    showToast,
   } = useAnalysis();
 
   const [stepIndex, setStepIndex] = useState(0);
@@ -75,19 +83,20 @@ export const LiveDemoPage: React.FC = () => {
   // Step 1: Connect & Mic Check
   const [micReady, setMicReady] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
-  const [credits, setCredits] = useState<CreditsResponse | null>(null);
+  const [localCredits, setLocalCredits] = useState<CreditsResponse | null>(null);
   const micProbeRef = useRef<AudioCaptureHelper | null>(null);
   const [probingMic, setProbingMic] = useState(false);
 
-  // Step 2: Enroll 3 Samples
+  // Step 2: Shared Customer Picker & Unified Enroll (using same /voiceprints/enroll-audio endpoint)
   const [presenterName, setPresenterName] = useState("Live Presenter");
   const [presenterId, setPresenterId] = useState("CUST-LIVE-PRESENTER");
+  const [consentConfirmed, setConsentConfirmed] = useState(false);
   const [samples, setSamples] = useState<AudioRecordingResult[]>([]);
   const [recordingSample, setRecordingSample] = useState(false);
   const sampleRecRef = useRef<AudioCaptureHelper | null>(null);
   const [enrolledVp, setEnrolledVp] = useState<VoiceprintRecord | null>(null);
 
-  // Step 3: Live Aletheia WS + Waveform
+  // Step 3: Live Aletheia + Groq Whisper/LLM WS + Cached Re-run
   const wsClientRef = useRef<LiveCallSocketClient | null>(null);
   const workletCtrlRef = useRef<LiveWorkletController | null>(null);
   const [wsStatus, setWsStatus] = useState<
@@ -126,8 +135,12 @@ export const LiveDemoPage: React.FC = () => {
   const manipWsRef = useRef<LiveCallSocketClient | null>(null);
   const manipWorkletRef = useRef<LiveWorkletController | null>(null);
 
-  // Step 7: Fusion & Challenge / Bot Guard Action
+  // Step 7 & Right-Side Panel: Fusion, Decision & Audit Trail
   const [fusionCall, setFusionCall] = useState<CallSession | null>(null);
+  const [sessionEndedLocally, setSessionEndedLocally] = useState(false);
+  const [localAuditLog, setLocalAuditLog] = useState<
+    Array<{ action: string; note: string; at: string }>
+  >([]);
   const [challengeOpen, setChallengeOpen] = useState(false);
   const [actionDoneNote, setActionDoneNote] = useState<string | null>(null);
 
@@ -135,19 +148,86 @@ export const LiveDemoPage: React.FC = () => {
   const [finalReport, setFinalReport] = useState<CallReportResponse | null>(null);
   const [usageSummary, setUsageSummary] = useState<UsageSummaryResponse | null>(null);
 
+  const stopAllStreams = async () => {
+    setProbingMic(false);
+    setRecordingSample(false);
+    setStreamingAudio(false);
+    setManipStreaming(false);
+    setEidosRecordingTarget(null);
+    setSttListening(false);
+    micProbeRef.current?.cancel();
+    sampleRecRef.current?.cancel();
+    eidosRecRef.current?.cancel();
+    wsClientRef.current?.disconnect();
+    manipWsRef.current?.disconnect();
+    await workletCtrlRef.current?.stop().catch(() => {});
+    workletCtrlRef.current = null;
+    await manipWorkletRef.current?.stop().catch(() => {});
+    manipWorkletRef.current = null;
+    recognitionRef.current?.stop();
+  };
+
   useEffect(() => {
     setExecutionMode("LIVE");
     return () => {
-      micProbeRef.current?.cancel();
-      sampleRecRef.current?.cancel();
-      eidosRecRef.current?.cancel();
-      wsClientRef.current?.disconnect();
-      manipWsRef.current?.disconnect();
-      workletCtrlRef.current?.stop().catch(() => {});
-      manipWorkletRef.current?.stop().catch(() => {});
-      recognitionRef.current?.stop();
+      void stopAllStreams();
     };
   }, [setExecutionMode]);
+
+  // Sync active customer name from shared voiceprints picker when user picks an enrolled ID
+  const handleSelectExistingCustomer = (cid: string) => {
+    setPresenterId(cid);
+    const vp = voiceprints.find((v) => v.customer_id === cid);
+    if (vp) {
+      setPresenterName(vp.customer_name);
+      setEnrolledVp(vp);
+    }
+  };
+
+  // Unified right-side & Step 7 action handler
+  const handleLiveOperatorAction = async (action: string, note: string) => {
+    const normalizedAction = action === "BLOCK" ? "BLOCK_CALL" : action;
+    if (normalizedAction === "TERMINATE_CALL" || normalizedAction === "BLOCK_CALL") {
+      await stopAllStreams();
+      setSessionEndedLocally(true);
+    }
+    const targetCall = fusionCall || scriptCall || liveAletheiaCall;
+
+    if (normalizedAction === "CHALLENGE" || normalizedAction === "STEP_UP_CHALLENGE") {
+      setChallengeOpen(true);
+    }
+
+    if (targetCall) {
+      const updated = await executeCallAction(normalizedAction, note, targetCall.call_id);
+      if (updated) {
+        setFusionCall(updated);
+        applyUpdatedCall(updated);
+      } else if (normalizedAction === "TERMINATE_CALL" || normalizedAction === "BLOCK_CALL") {
+        setFusionCall((prev) =>
+          prev
+            ? {
+                ...prev,
+                call_state: "VERDICT",
+                decision: "END_CALL",
+                verdict: "THREAT",
+                band: "THREAT",
+                decision_reason: note,
+              }
+            : null
+        );
+      }
+    } else if (normalizedAction === "TERMINATE_CALL" || normalizedAction === "BLOCK_CALL") {
+      showToast({
+        variant: "error",
+        title: "Call Ended (END_CALL)",
+        message: "Active microphone/WebSocket streams stopped and live session terminated.",
+      });
+    }
+
+    const nowIso = new Date().toISOString();
+    setLocalAuditLog((prev) => [{ action: normalizedAction, note, at: nowIso }, ...prev]);
+    setActionDoneNote(`Executed ${normalizedAction}: ${note}`);
+  };
 
   // Step 1 Actions
   const handleConnectCheck = async () => {
@@ -157,7 +237,12 @@ export const LiveDemoPage: React.FC = () => {
     try {
       await refreshSystem();
       const cred = await aegisApi.getCredits();
-      setCredits(cred);
+      setLocalCredits(cred);
+      showToast({
+        variant: "info",
+        title: "System Connected",
+        message: `DetectifAI ${health?.detectifai_configured ? "SET" : "CHECK"} · Balance: ${cred.available ?? "Unavailable"}`,
+      });
       if (cred.error && cred.error.toLowerCase().includes("402")) {
         setGlobalError("DetectifAI credit quota exhausted (402). Top up before running LIVE analysis.");
       }
@@ -195,7 +280,7 @@ export const LiveDemoPage: React.FC = () => {
     }
   };
 
-  // Step 2 Actions
+  // Step 2 Actions (Same backend route + validation + credits refresh as EnrollmentForm)
   const handleRecordSample = async () => {
     setGlobalError(null);
     if (recordingSample) {
@@ -223,6 +308,15 @@ export const LiveDemoPage: React.FC = () => {
 
   const handleEnrollSamples = async () => {
     if (samples.length === 0) return;
+    if (!consentConfirmed) {
+      setGlobalError("Explicit consent for DetectifAI and Groq biometric processing is required.");
+      return;
+    }
+    const cleanId = presenterId.trim().toUpperCase();
+    if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(cleanId)) {
+      setGlobalError("Customer ID must match ^[A-Za-z0-9_.:-]{1,64}$.");
+      return;
+    }
     setBusy(true);
     setGlobalError(null);
     try {
@@ -230,27 +324,39 @@ export const LiveDemoPage: React.FC = () => {
       const totalDuration = samples.reduce((sum, s) => sum + s.durationSeconds, 0);
       const vp = await aegisApi.enrollVoiceprintAudio({
         file: mergedBlob,
-        customer_id: presenterId.trim() || "CUST-LIVE-PRESENTER",
-        customer_name: presenterName.trim() || "Live Presenter",
+        customer_id: cleanId,
+        customer_name: presenterName.trim() || cleanId,
         consent_confirmed: true,
         sample_duration_sec: Math.max(5, Number(totalDuration.toFixed(1))),
+        execution_mode: "LIVE",
       });
       setEnrolledVp(vp);
-      await refreshVoiceprints();
+      setPresenterId(vp.customer_id);
+      setPresenterName(vp.customer_name);
+      await Promise.all([refreshVoiceprints(), refreshSystem()]);
+      showToast({
+        variant: "success",
+        title: `Enrolled ${vp.customer_id}`,
+        message: vp.reconciled
+          ? `Reconciled existing DetectifAI speaker (0 credits).`
+          : `Op ${vp.provider_operation_id || "OK"} · ${vp.credits_used ?? 200} credits.`,
+      });
     } catch (err: unknown) {
-      setGlobalError(
+      const msg =
         err && typeof err === "object" && "message" in err
           ? String((err as { message: unknown }).message)
-          : "Voiceprint enrollment failed."
-      );
+          : "Voiceprint enrollment failed.";
+      setGlobalError(msg);
+      showToast({ variant: "error", title: "Enrollment Failed", message: msg });
     } finally {
       setBusy(false);
     }
   };
 
-  // Step 3 Actions (WS 16 kHz PCM Stream + Finalize Live Aletheia)
+  // Step 3 Actions (WS 16 kHz PCM Stream + Parallel Live Aletheia + Groq)
   const handleStartAletheiaStream = async () => {
     setGlobalError(null);
+    setSessionEndedLocally(false);
     setWsChunksSent(0);
     setLiveAletheiaCall(null);
 
@@ -258,12 +364,19 @@ export const LiveDemoPage: React.FC = () => {
       onStatus: (st) => setWsStatus(st),
       onError: (msg) => setGlobalError(msg),
       onMessage: (payload) => {
-        if (payload.type === "finalized" && payload.session) {
-          const sess = payload.session as CallSession;
+        if (payload.type === "final" && payload.result) {
+          const unified = payload.result as { session: CallSession };
+          const sess = unified.session;
           setLiveAletheiaCall(sess);
           setFusionCall(sess);
           applyUpdatedCall(sess);
+          void refreshSystem();
           setBusy(false);
+          showToast({
+            variant: sess.decision === "ALLOW" ? "success" : "warning",
+            title: `Live Analysis Complete (${sess.decision})`,
+            message: `Aletheia + Groq finished for ${sess.call_id}.`,
+          });
         } else if (payload.type === "error") {
           setGlobalError(String(payload.message || "WebSocket streaming error"));
           setBusy(false);
@@ -279,9 +392,10 @@ export const LiveDemoPage: React.FC = () => {
         onChunk: (pcm, _lvl, bars) => {
           if (bars.length > 0) setWaveform(bars);
           client.sendJson({
-            type: "audio_chunk",
-            pcm16_base64: int16ToBase64(pcm),
+            type: "chunk",
+            pcm_b64: int16ToBase64(pcm),
             sample_rate: 16000,
+            claimed_customer_id: enrolledVp?.customer_id || presenterId,
           });
           setWsChunksSent((n) => n + 1);
         },
@@ -307,9 +421,6 @@ export const LiveDemoPage: React.FC = () => {
       wsClientRef.current?.sendJson({
         type: "finalize",
         claimed_customer_id: enrolledVp?.customer_id || presenterId,
-        caller_label: `${presenterName} (Live WS)`,
-        transcript_text: spokenTranscript,
-        execution_mode: "LIVE",
       });
     } catch (err: unknown) {
       setBusy(false);
@@ -318,6 +429,38 @@ export const LiveDemoPage: React.FC = () => {
           ? String((err as { message: unknown }).message)
           : "Failed to finalize live Aletheia analysis."
       );
+    }
+  };
+
+  // Cached zero-cost re-run check using same audio clip
+  const handleCachedRerun = async () => {
+    if (!latestLiveBlob) return;
+    setBusy(true);
+    setGlobalError(null);
+    try {
+      const res = await aegisApi.analyzeCall({
+        file: latestLiveBlob,
+        filename: "live_rerun.wav",
+        claimed_customer_id: enrolledVp?.customer_id || presenterId,
+        caller_label: `${presenterName} (Cached Re-Run)`,
+        execution_mode: "CACHED",
+      });
+      setLiveAletheiaCall(res.session);
+      setFusionCall(res.session);
+      applyUpdatedCall(res.session);
+      showToast({
+        variant: "success",
+        title: "Cached Re-Run Complete",
+        message: "0 DetectifAI & Groq provider credits consumed (SHA-256 cache hit).",
+      });
+    } catch (err: unknown) {
+      setGlobalError(
+        err && typeof err === "object" && "message" in err
+          ? String((err as { message: unknown }).message)
+          : "Cached re-run failed."
+      );
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -334,9 +477,11 @@ export const LiveDemoPage: React.FC = () => {
             file: res.blob,
             claimed_customer_id: enrolledVp?.customer_id || presenterId,
             simulate_outcome: target === "own" ? "match" : "mismatch",
+            execution_mode: "LIVE",
           });
           if (target === "own") setOwnVerifyResult(verified);
           else setImpostorVerifyResult(verified);
+          await refreshSystem();
         }
       } catch (err: unknown) {
         setGlobalError(
@@ -361,7 +506,7 @@ export const LiveDemoPage: React.FC = () => {
     }
   };
 
-  // Step 5 Actions (SpeechRecognition + Live Script Analysis)
+  // Step 5 Actions (SpeechRecognition + Live Groq Script Analysis)
   const handleToggleBrowserStt = () => {
     if (sttListening) {
       recognitionRef.current?.stop();
@@ -405,22 +550,24 @@ export const LiveDemoPage: React.FC = () => {
   const handleRunScriptAnalysis = async () => {
     setBusy(true);
     setGlobalError(null);
+    setSessionEndedLocally(false);
     try {
       const res = await aegisApi.analyzeCall({
         file: latestLiveBlob || undefined,
         transcript_text: spokenTranscript,
         claimed_customer_id: enrolledVp?.customer_id || presenterId,
-        caller_label: `${presenterName} (Script Check)`,
+        caller_label: `${presenterName} (Groq Script Check)`,
         execution_mode: "LIVE",
       });
       setScriptCall(res.session);
       setFusionCall(res.session);
       applyUpdatedCall(res.session);
+      await refreshSystem();
     } catch (err: unknown) {
       setGlobalError(
         err && typeof err === "object" && "message" in err
           ? String((err as { message: unknown }).message)
-          : "Live Script Analysis failed."
+          : "Live Groq Script Analysis failed."
       );
     } finally {
       setBusy(false);
@@ -434,15 +581,9 @@ export const LiveDemoPage: React.FC = () => {
       setManipStreaming(false);
       await manipWorkletRef.current?.stop().catch(() => {});
       manipWsRef.current?.sendJson({
-        type: "transcript_chunk",
-        text: manipTranscript,
-      });
-      manipWsRef.current?.sendJson({
         type: "finalize",
         claimed_customer_id: enrolledVp?.customer_id || presenterId,
-        caller_label: `${presenterName} (Manipulation Stream)`,
-        transcript_text: manipTranscript,
-        execution_mode: "LIVE",
+        transcript_chunk: manipTranscript,
       });
       return;
     }
@@ -451,20 +592,17 @@ export const LiveDemoPage: React.FC = () => {
       onStatus: (st) => setWsStatus(st),
       onError: (msg) => setGlobalError(msg),
       onMessage: (payload) => {
-        if (payload.type === "partial_update") {
-          const markers = (payload.markers || []) as Array<{
-            category: string;
-            phrase: string;
-            severity: string;
-          }>;
-          setLiveManipMarkers(markers);
-          if (typeof payload.manipulation_score === "number") {
-            setManipScore(payload.manipulation_score);
-          }
-        } else if (payload.type === "finalized" && payload.session) {
-          const sess = payload.session as CallSession;
-          setFusionCall(sess);
-          applyUpdatedCall(sess);
+        if (payload.type === "partial") {
+          const manip = payload.manipulation as {
+            score?: number;
+            markers?: Array<{ category: string; phrase: string; severity: string }>;
+          } | undefined;
+          if (manip?.markers) setLiveManipMarkers(manip.markers);
+          if (typeof manip?.score === "number") setManipScore(manip.score);
+        } else if (payload.type === "final" && payload.result) {
+          const unified = payload.result as { session: CallSession };
+          setFusionCall(unified.session);
+          applyUpdatedCall(unified.session);
         }
       },
     });
@@ -477,13 +615,11 @@ export const LiveDemoPage: React.FC = () => {
         onChunk: (pcm, _lvl, bars) => {
           if (bars.length > 0) setWaveform(bars);
           client.sendJson({
-            type: "audio_chunk",
-            pcm16_base64: int16ToBase64(pcm),
+            type: "chunk",
+            pcm_b64: int16ToBase64(pcm),
             sample_rate: 16000,
-          });
-          client.sendJson({
-            type: "transcript_chunk",
-            text: manipTranscript,
+            transcript_chunk: manipTranscript,
+            claimed_customer_id: enrolledVp?.customer_id || presenterId,
           });
         },
       });
@@ -526,664 +662,811 @@ export const LiveDemoPage: React.FC = () => {
   }, [stepIndex]);
 
   const activeFusion = fusionCall || scriptCall || liveAletheiaCall;
+  const anyLiveStreamActive =
+    probingMic || recordingSample || streamingAudio || manipStreaming || eidosRecordingTarget !== null;
+  const effectiveCredits = localCredits || sharedCredits;
+  const effectiveDecision = sessionEndedLocally ? "END_CALL" : activeFusion?.decision;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="page-title">AEGIS Live Microphone Presentation Demo</h1>
-          <p className="body-text">
-            Sequential 8-step LIVE analysis against real DetectifAI Aletheia + Eidos APIs — zero
-            cache, zero synthetic mocks.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <ModeBadge mode="LIVE" />
-          <Badge variant={wsStatus === "connected" ? "success" : "neutral"}>
-            {wsStatus === "connected" ? (
-              <span className="inline-flex items-center gap-1">
-                <Wifi className="w-3.5 h-3.5" /> WS {wsStatus}
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1">
-                <WifiOff className="w-3.5 h-3.5" /> WS {wsStatus}
-              </span>
-            )}
-          </Badge>
-        </div>
-      </div>
-
-      {/* Stepper */}
-      <Card className="!p-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
-          {STEP_LABELS.map((label, idx) => (
-            <button
-              key={label}
-              type="button"
-              onClick={() => setStepIndex(idx)}
-              className={`px-2.5 py-2 rounded-lg text-[13px] font-semibold text-left border cursor-pointer transition-colors ${
-                idx === stepIndex
-                  ? "bg-[var(--brand-navy)] text-white border-[var(--brand-navy)]"
-                  : idx < stepIndex
-                    ? "bg-[var(--decision-continue-tint)] text-[var(--decision-continue-text)] border-[var(--decision-continue-border)]"
-                    : "bg-[var(--fill-subtle)] text-[var(--text-secondary)] border-[var(--border)]"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </Card>
-
-      {executionMode !== "LIVE" && (
-        <Banner variant="warn" title="LIVE Mode Enforced">
-          Live Demo forces LIVE mode and bypasses all local caches so every provider row is recorded
-          as FRESH.
-        </Banner>
-      )}
-
-      {globalError && (
-        <Banner variant="error" title="Live Demo Error">
-          {globalError}
-        </Banner>
-      )}
-
-      {/* Step Content */}
-      {stepIndex === 0 && (
-        <Card className="space-y-5">
-          <div className="flex items-center justify-between">
-            <h2 className="section-title">Step 1: Connect Mic, Verify Health &amp; Check Credits</h2>
-            <Badge variant={micReady ? "success" : "warning"}>
-              {micReady ? "Mic Ready" : "Check Mic"}
-            </Badge>
+    <div className="flex flex-col lg:flex-row gap-4 items-start">
+      <div className="flex-1 min-w-0 w-full space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h1 className="page-title">AEGIS Live Microphone Presentation Demo</h1>
+            <p className="body-text">
+              Sequential 8-step LIVE analysis against real DetectifAI Aletheia + Eidos + Groq Whisper
+              &amp; LLM APIs.
+            </p>
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-1">
-              <div className="caption-text font-semibold">DetectifAI API Key</div>
-              <div className="text-[18px] font-bold">
-                {health?.detectifai_configured ? "CONFIGURED (LIVE)" : "NOT SET"}
-              </div>
-              {!health?.detectifai_configured && (
-                <Link to="/settings" className="text-[13px] text-[var(--brand-steel)] underline">
-                  Configure in Settings &rarr;
-                </Link>
+          <div className="flex items-center gap-2">
+            <ModeBadge mode="LIVE" />
+            <Badge variant={wsStatus === "connected" ? "success" : "neutral"}>
+              {wsStatus === "connected" ? (
+                <span className="inline-flex items-center gap-1">
+                  <Wifi className="w-3.5 h-3.5" /> WS {wsStatus}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1">
+                  <WifiOff className="w-3.5 h-3.5" /> WS {wsStatus}
+                </span>
               )}
-            </div>
-            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-1">
-              <div className="caption-text font-semibold">DetectifAI Credit Balance</div>
-              <div className="text-[18px] font-bold font-mono flex items-center gap-1.5">
-                <Coins className="w-4 h-4 text-[var(--brand-steel)]" />
-                {credits?.available !== null && credits?.available !== undefined
-                  ? credits.available
-                  : "Click Check Health"}
-              </div>
-            </div>
-            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
-              <div className="caption-text font-semibold">Live Input Level ({micLevel}%)</div>
-              <div className="w-full h-3 rounded-full bg-[var(--border)] overflow-hidden">
-                <div
-                  className="h-full bg-[var(--decision-continue-solid)] transition-all duration-75"
-                  style={{ width: `${micLevel}%` }}
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-3">
-            <Button
-              type="button"
-              variant="primary"
-              disabled={busy}
-              onClick={handleConnectCheck}
-              icon={<RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} />}
-            >
-              Verify Backend Health &amp; Credits
-            </Button>
-            <Button
-              type="button"
-              variant={probingMic ? "danger" : "secondary"}
-              onClick={handleToggleMicProbe}
-              icon={<Mic className="w-4 h-4" />}
-            >
-              {probingMic ? "Stop Mic Meter" : "Test Live Microphone"}
-            </Button>
-          </div>
-        </Card>
-      )}
-
-      {stepIndex === 1 && (
-        <Card className="space-y-5">
-          <div className="flex items-center justify-between">
-            <h2 className="section-title">Step 2: Enroll Presenter Voiceprint (Eidos)</h2>
-            <Badge variant={enrolledVp ? "success" : "neutral"}>
-              {samples.length} Sample(s) Recorded
             </Badge>
           </div>
+        </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="block space-y-1">
-              <span className="text-[14px] font-semibold">Presenter Name</span>
-              <input
-                type="text"
-                value={presenterName}
-                onChange={(e) => setPresenterName(e.target.value)}
-                className="w-full h-10 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]"
-              />
-            </label>
-            <label className="block space-y-1">
-              <span className="text-[14px] font-semibold">Customer ID</span>
-              <input
-                type="text"
+        {/* Stepper + Shared Customer Picker Bar */}
+        <Card className="!p-4 space-y-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+            {STEP_LABELS.map((label, idx) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setStepIndex(idx)}
+                className={`px-2.5 py-2 rounded-lg text-[13px] font-semibold text-left border cursor-pointer transition-colors ${
+                  idx === stepIndex
+                    ? "bg-[var(--brand-navy)] text-white border-[var(--brand-navy)]"
+                    : idx < stepIndex
+                      ? "bg-[var(--decision-continue-tint)] text-[var(--decision-continue-text)] border-[var(--decision-continue-border)]"
+                      : "bg-[var(--fill-subtle)] text-[var(--text-secondary)] border-[var(--border)]"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--border)] text-[14px]">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-[var(--text-secondary)]">Active Customer:</span>
+              <select
+                aria-label="Live Demo customer picker"
                 value={presenterId}
-                onChange={(e) => setPresenterId(e.target.value)}
-                className="w-full h-10 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] font-mono"
-              />
-            </label>
-          </div>
-
-          <p className="body-text">
-            Record 3 short voice samples (~7 s each) speaking naturally, then upload the concatenated
-            16 kHz WAV to Eidos enrollment.
-          </p>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              type="button"
-              variant={recordingSample ? "danger" : "secondary"}
-              onClick={handleRecordSample}
-              icon={recordingSample ? <StopCircle className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-            >
-              {recordingSample
-                ? `Stop Sample #${samples.length + 1}`
-                : `Record Sample #${samples.length + 1}`}
-            </Button>
-
-            <Button
-              type="button"
-              variant="primary"
-              disabled={busy || samples.length === 0}
-              onClick={handleEnrollSamples}
-              icon={<UserCheck className="w-4 h-4" />}
-            >
-              {busy ? "Enrolling..." : `Enroll Voiceprint (${samples.length} sample/s)`}
-            </Button>
-          </div>
-
-          {samples.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {samples.map((s, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 rounded-lg border border-[var(--border)] bg-[var(--fill-subtle)] space-y-1"
-                >
-                  <div className="font-semibold text-[13px]">
-                    Sample #{idx + 1} ({s.durationSeconds.toFixed(1)}s)
-                  </div>
-                  <audio controls src={s.url} className="w-full h-8" />
-                </div>
-              ))}
+                onChange={(e) => handleSelectExistingCustomer(e.target.value)}
+                className="px-2.5 py-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[14px]"
+              >
+                {voiceprints
+                  .filter((vp) => vp.status === "ACTIVE")
+                  .map((vp) => (
+                    <option key={`${vp.voiceprint_id}-${vp.customer_id}`} value={vp.customer_id}>
+                      {vp.customer_name} ({vp.customer_id})
+                    </option>
+                  ))}
+                {!voiceprints.some((v) => v.customer_id === presenterId) && (
+                  <option value={presenterId}>
+                    {presenterName} ({presenterId})
+                  </option>
+                )}
+              </select>
             </div>
-          )}
-
-          {enrolledVp && (
-            <Banner variant="info" title="Voiceprint Enrolled">
-              Enrolled {enrolledVp.customer_name} (`{enrolledVp.voiceprint_id}`) &bull; Speaker ref:{" "}
-              {enrolledVp.provider_speaker_ref || "Active baseline"}.
-            </Banner>
-          )}
+            <span className="caption-text font-mono">
+              Powered by DetectifAI + Groq Whisper + LLM
+            </span>
+          </div>
         </Card>
-      )}
 
-      {stepIndex === 2 && (
-        <Card className="space-y-5">
-          <div className="flex items-center justify-between">
-            <h2 className="section-title">Step 3: Live Aletheia Deepfake Stream (16 kHz WebSocket)</h2>
-            <Badge variant={streamingAudio ? "warning" : "neutral"}>
-              Chunks Sent: {wsChunksSent}
-            </Badge>
-          </div>
+        {executionMode !== "LIVE" && (
+          <Banner variant="warn" title="LIVE Mode Enforced">
+            Live Demo uses LIVE mode for fresh DetectifAI calls; Groq Whisper+LLM caches by SHA-256
+            on repeat audio.
+          </Banner>
+        )}
 
-          {/* 24-bar Live Waveform SVG */}
-          <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)]">
-            <svg viewBox="0 0 240 60" className="w-full h-20">
-              {waveform.map((val, idx) => {
-                const h = Math.max(4, (val / 100) * 52);
-                return (
-                  <rect
-                    key={idx}
-                    x={idx * 10 + 1}
-                    y={30 - h / 2}
-                    width="7"
-                    height={h}
-                    rx="2"
-                    fill={streamingAudio ? "var(--brand-steel)" : "var(--border)"}
+        {globalError && (
+          <Banner variant="error" title="Live Demo Error">
+            {globalError}
+          </Banner>
+        )}
+
+        {/* Step Content */}
+        {stepIndex === 0 && (
+          <Card className="space-y-5">
+            <div className="flex items-center justify-between">
+              <h2 className="section-title">Step 1: Connect Mic, Verify Health &amp; Check Credits</h2>
+              <Badge variant={micReady ? "success" : "warning"}>
+                {micReady ? "Mic Ready" : "Check Mic"}
+              </Badge>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-1">
+                <div className="caption-text font-semibold">DetectifAI &amp; Groq Status</div>
+                <div className="text-[16px] font-bold">
+                  DetectifAI: {health?.detectifai || (health?.detectifai_configured ? "SET" : "NOT SET")}
+                </div>
+                <div className="text-[15px] font-semibold text-[var(--text-secondary)]">
+                  Groq Whisper + LLM: {health?.groq || (health?.groq_configured ? "SET" : "NOT SET")}
+                </div>
+                {!health?.detectifai_configured && (
+                  <Link to="/settings" className="text-[13px] text-[var(--brand-steel)] underline">
+                    Configure in Settings &rarr;
+                  </Link>
+                )}
+              </div>
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-1">
+                <div className="caption-text font-semibold">DetectifAI Credit Balance</div>
+                <div className="text-[18px] font-bold font-mono flex items-center gap-1.5">
+                  <Coins className="w-4 h-4 text-[var(--brand-steel)]" />
+                  {effectiveCredits?.available !== null && effectiveCredits?.available !== undefined
+                    ? effectiveCredits.available.toLocaleString()
+                    : "Click Check Health"}
+                </div>
+              </div>
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
+                <div className="caption-text font-semibold">Live Input Level ({micLevel}%)</div>
+                <div className="w-full h-3 rounded-full bg-[var(--border)] overflow-hidden">
+                  <div
+                    className="h-full bg-[var(--decision-continue-solid)] transition-all duration-75"
+                    style={{ width: `${micLevel}%` }}
                   />
-                );
-              })}
-            </svg>
-          </div>
+                </div>
+              </div>
+            </div>
 
-          <div className="flex flex-wrap gap-3">
-            {!streamingAudio ? (
+            <div className="flex flex-wrap gap-3">
               <Button
                 type="button"
                 variant="primary"
                 disabled={busy}
-                onClick={handleStartAletheiaStream}
-                icon={<Radio className="w-4 h-4" />}
+                onClick={handleConnectCheck}
+                icon={<RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} />}
               >
-                Start 16 kHz WS Audio Stream (Speak 8+ seconds)
+                Verify Backend Health &amp; Credits
               </Button>
-            ) : (
               <Button
                 type="button"
-                variant="danger"
-                onClick={handleStopAletheiaStream}
-                icon={<StopCircle className="w-4 h-4" />}
+                variant={probingMic ? "danger" : "secondary"}
+                onClick={handleToggleMicProbe}
+                icon={<Mic className="w-4 h-4" />}
               >
-                Stop &amp; Run Live Aletheia
+                {probingMic ? "Stop Mic Meter" : "Test Live Microphone"}
               </Button>
+            </div>
+          </Card>
+        )}
+
+        {stepIndex === 1 && (
+          <Card className="space-y-5">
+            <div className="flex items-center justify-between">
+              <h2 className="section-title">Step 2: Enroll Presenter Voiceprint (Eidos)</h2>
+              <Badge variant={enrolledVp ? "success" : "neutral"}>
+                {samples.length} Sample(s) Recorded
+              </Badge>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <label className="block space-y-1">
+                <span className="text-[14px] font-semibold">Customer Name</span>
+                <input
+                  type="text"
+                  value={presenterName}
+                  onChange={(e) => setPresenterName(e.target.value)}
+                  placeholder="Full Name"
+                  className="w-full h-10 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]"
+                />
+              </label>
+              <label className="block space-y-1">
+                <span className="text-[14px] font-semibold">Customer ID (A-Z, 0-9, -, _)</span>
+                <input
+                  type="text"
+                  value={presenterId}
+                  onChange={(e) => setPresenterId(e.target.value)}
+                  placeholder="CUST-9900"
+                  className="w-full h-10 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] font-mono"
+                />
+              </label>
+            </div>
+
+            <p className="body-text">
+              Uses the exact same enrollment endpoint as Voiceprints (`POST /api/voiceprints/enroll-audio`),
+              validates speaker ID, reconciles existing DetectifAI speakers without double-charging, and updates
+              the shared customer picker &amp; credit chip immediately.
+            </p>
+
+            <label className="flex items-start gap-3 p-3 rounded-lg border border-[var(--border)] bg-[var(--fill-subtle)] cursor-pointer text-[14px]">
+              <input
+                type="checkbox"
+                checked={consentConfirmed}
+                onChange={(e) => setConsentConfirmed(e.target.checked)}
+                className="w-4 h-4 mt-0.5 accent-[var(--brand-navy)]"
+              />
+              <span>
+                I confirm biometric voiceprint enrollment &amp; analysis consent via DetectifAI and Groq.
+              </span>
+            </label>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                type="button"
+                variant={recordingSample ? "danger" : "secondary"}
+                onClick={handleRecordSample}
+                icon={recordingSample ? <StopCircle className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              >
+                {recordingSample
+                  ? `Stop Sample #${samples.length + 1}`
+                  : `Record Sample #${samples.length + 1}`}
+              </Button>
+
+              <Button
+                type="button"
+                variant="primary"
+                loading={busy}
+                disabled={busy || samples.length === 0 || !consentConfirmed}
+                onClick={handleEnrollSamples}
+                icon={<UserCheck className="w-4 h-4" />}
+              >
+                {busy ? "Enrolling..." : `Enroll Voiceprint (${samples.length} sample/s)`}
+              </Button>
+            </div>
+
+            {!consentConfirmed && (
+              <p className="caption-text">Confirm consent checkbox above to enable Enrollment.</p>
             )}
-          </div>
+            <p className="caption-text">
+              Total recorded:{" "}
+              <span className="font-mono font-semibold">
+                {samples.reduce((sum, x) => sum + x.durationSeconds, 0).toFixed(1)}s
+              </span>{" "}
+              (DetectifAI Eidos requires at least 15s total audio / 10s speech for new speaker enrollment).
+            </p>
 
-          {liveAletheiaCall && (
-            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-bold text-[15px]">
-                  Aletheia Status: {liveAletheiaCall.voice_authenticity.status}
-                </span>
-                <span className="font-mono font-bold text-[16px]">
-                  Synthetic Likelihood:{" "}
-                  {liveAletheiaCall.voice_authenticity.deepfake_probability !== null
-                    ? liveAletheiaCall.voice_authenticity.deepfake_probability.toFixed(3)
-                    : "N/A"}
-                </span>
-              </div>
-              <p className="caption-text">
-                Operation ID: {liveAletheiaCall.voice_authenticity.operation_id || "—"} &bull;
-                Latency: {liveAletheiaCall.voice_authenticity.latency_ms ?? "—"} ms &bull; Cache hit:{" "}
-                {String(liveAletheiaCall.voice_authenticity.cache_hit)}
-              </p>
-            </div>
-          )}
-        </Card>
-      )}
-
-      {stepIndex === 3 && (
-        <Card className="space-y-5">
-          <h2 className="section-title">Step 4: Live Eidos Biometric Verification (Own vs Other Speaker)</h2>
-          <p className="body-text">
-            Test against enrolled customer `{enrolledVp?.customer_id || presenterId}`. First speak
-            yourself to observe VERIFIED; then let someone else speak (or alter voice) to observe
-            MISMATCH.
-          </p>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-3">
-              <h3 className="font-bold text-[15px]">4A. Presenter Own Voice</h3>
-              <Button
-                type="button"
-                variant={eidosRecordingTarget === "own" ? "danger" : "primary"}
-                disabled={busy || eidosRecordingTarget === "impostor"}
-                onClick={() => void handleToggleEidosSample("own")}
-                icon={<Mic className="w-4 h-4" />}
-              >
-                {eidosRecordingTarget === "own" ? "Stop & Verify Own Voice" : "Record Own Voice Sample"}
-              </Button>
-              {ownVerifyResult && (
-                <div className="space-y-1">
-                  <Badge variant={ownVerifyResult.verification_result === "VERIFIED" ? "success" : "warning"}>
-                    {ownVerifyResult.verification_result} ({ownVerifyResult.match_percentage?.toFixed(1) ?? "—"}%)
-                  </Badge>
-                  <p className="caption-text">{ownVerifyResult.notes}</p>
-                </div>
-              )}
-            </div>
-
-            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-3">
-              <h3 className="font-bold text-[15px]">4B. Different Speaker / Impostor</h3>
-              <Button
-                type="button"
-                variant={eidosRecordingTarget === "impostor" ? "danger" : "secondary"}
-                disabled={busy || eidosRecordingTarget === "own"}
-                onClick={() => void handleToggleEidosSample("impostor")}
-                icon={<Mic className="w-4 h-4" />}
-              >
-                {eidosRecordingTarget === "impostor"
-                  ? "Stop & Verify Impostor"
-                  : "Record Different Speaker Sample"}
-              </Button>
-              {impostorVerifyResult && (
-                <div className="space-y-1">
-                  <Badge variant={impostorVerifyResult.verification_result === "MISMATCH" ? "danger" : "warning"}>
-                    {impostorVerifyResult.verification_result} ({impostorVerifyResult.match_percentage?.toFixed(1) ?? "—"}%)
-                  </Badge>
-                  <p className="caption-text">{impostorVerifyResult.notes}</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {stepIndex === 4 && (
-        <Card className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="section-title">Step 5: Script Analysis Teleprompter &amp; Live ASR</h2>
-            <Badge variant="info">Layer 3</Badge>
-          </div>
-
-          <div className="p-4 rounded-xl border border-[var(--brand-steel)] bg-[var(--fill-subtle)] space-y-2">
-            <div className="text-[12px] font-bold uppercase text-[var(--brand-steel)]">
-              Teleprompter Prompt
-            </div>
-            <p className="text-[16px] font-medium text-[var(--text-primary)]">{TELEPROMPTER_SCRIPT}</p>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <Button
-              type="button"
-              variant={sttListening ? "danger" : "secondary"}
-              onClick={handleToggleBrowserStt}
-              icon={<Mic className="w-4 h-4" />}
-            >
-              {sttListening ? "Stop Speech-to-Text" : "Capture Live Speech-to-Text"}
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              disabled={busy}
-              onClick={handleRunScriptAnalysis}
-              icon={<FileSearch className="w-4 h-4" />}
-            >
-              {busy ? "Analyzing Script..." : "Run Live Script Analysis"}
-            </Button>
-          </div>
-
-          <textarea
-            value={spokenTranscript}
-            onChange={(e) => setSpokenTranscript(e.target.value)}
-            rows={3}
-            className="w-full p-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[14px]"
-          />
-
-          {scriptCall && (
-            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-bold">Engine: {scriptCall.scam_analysis.engine_used}</span>
-                <Badge
-                  variant={
-                    scriptCall.scam_analysis.risk_score === null
-                      ? "neutral"
-                      : scriptCall.scam_analysis.risk_score >= 60
-                        ? "danger"
-                        : "warning"
-                  }
-                >
-                  Script Risk:{" "}
-                  {scriptCall.scam_analysis.risk_score !== null
-                    ? `${scriptCall.scam_analysis.risk_score.toFixed(1)}/100`
-                    : "Unavailable"}
-                </Badge>
-              </div>
-              <p className="body-text">{scriptCall.scam_analysis.summary}</p>
-              <div className="flex flex-wrap gap-1.5">
-                {scriptCall.scam_analysis.categories.map((c) => (
-                  <Badge key={c} variant="danger">
-                    {c}
-                  </Badge>
+            {samples.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {samples.map((s, idx) => (
+                  <div
+                    key={idx}
+                    className="p-3 rounded-lg border border-[var(--border)] bg-[var(--fill-subtle)] space-y-1"
+                  >
+                    <div className="font-semibold text-[13px]">
+                      Sample #{idx + 1} ({s.durationSeconds.toFixed(1)}s)
+                    </div>
+                    <audio controls src={s.url} className="w-full h-8" />
+                  </div>
                 ))}
               </div>
+            )}
+
+            {enrolledVp && (
+              <Banner variant="info" title="Voiceprint Enrolled & Synced">
+                Enrolled {enrolledVp.customer_name} (`{enrolledVp.voiceprint_id}`) &bull; Live Enrolled &bull;{" "}
+                speaker_id:{" "}
+                {enrolledVp.provider_speaker_id || enrolledVp.provider_speaker_ref || enrolledVp.customer_id} &bull;{" "}
+                op_id:{" "}
+                {enrolledVp.provider_operation_id || (enrolledVp.reconciled ? "Reconciled" : "N/A")} &bull;{" "}
+                {enrolledVp.credits_used ?? 0} credits.
+              </Banner>
+            )}
+          </Card>
+        )}
+
+        {stepIndex === 2 && (
+          <Card className="space-y-5">
+            <div className="flex items-center justify-between">
+              <h2 className="section-title">
+                Step 3: Live Aletheia + Groq Whisper/LLM (16 kHz WebSocket)
+              </h2>
+              <Badge variant={streamingAudio ? "warning" : "neutral"}>
+                Chunks Sent: {wsChunksSent}
+              </Badge>
             </div>
-          )}
-        </Card>
-      )}
 
-      {stepIndex === 5 && (
-        <Card className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="section-title">Step 6: Real-Time Manipulation &amp; Pressure Markers</h2>
-            <Badge variant="info">Layer 4</Badge>
-          </div>
-
-          <textarea
-            value={manipTranscript}
-            onChange={(e) => setManipTranscript(e.target.value)}
-            rows={2}
-            className="w-full p-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[14px]"
-          />
-
-          <Button
-            type="button"
-            variant={manipStreaming ? "danger" : "primary"}
-            onClick={() => void handleToggleManipStream()}
-            icon={<Activity className="w-4 h-4" />}
-          >
-            {manipStreaming
-              ? "Stop Stream & Finalize Manipulation Telemetry"
-              : "Stream Coercive Audio + Markers over WS"}
-          </Button>
-
-          {manipScore !== null && (
-            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
-              <div className="font-bold text-[15px]">
-                Live Pressure Score: {manipScore.toFixed(1)}/100 ({liveManipMarkers.length} markers)
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {liveManipMarkers.map((m, idx) => (
-                  <Badge key={idx} variant={m.severity === "HIGH" ? "danger" : "warning"}>
-                    {m.category}: &ldquo;{m.phrase}&rdquo;
-                  </Badge>
-                ))}
-              </div>
+            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)]">
+              <svg viewBox="0 0 240 60" className="w-full h-20">
+                {waveform.map((val, idx) => {
+                  const h = Math.max(4, (val / 100) * 52);
+                  return (
+                    <rect
+                      key={idx}
+                      x={idx * 10 + 1}
+                      y={30 - h / 2}
+                      width="7"
+                      height={h}
+                      rx="2"
+                      fill={streamingAudio ? "var(--brand-steel)" : "var(--border)"}
+                    />
+                  );
+                })}
+              </svg>
             </div>
-          )}
-        </Card>
-      )}
 
-      {stepIndex === 6 && (
-        <Card className="space-y-5">
-          <div className="flex items-center justify-between">
-            <h2 className="section-title">Step 7: 4-Layer Composite Fusion, Overrides &amp; Action</h2>
-            <Scale className="w-5 h-5 text-[var(--brand-steel)]" />
-          </div>
-
-          {!activeFusion ? (
-            <Banner variant="warn" title="Run Earlier Live Steps First">
-              Complete Step 3, 5, or 6 so AEGIS has a real LIVE CallSession to inspect here.
-            </Banner>
-          ) : (
-            <>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)]">
-                  <div className="caption-text font-semibold">Composite Trust Score</div>
-                  <div className="text-[28px] font-bold font-mono">
-                    {activeFusion.trust_score?.toFixed(1) ?? "N/A"}/100
-                  </div>
-                </div>
-                <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)]">
-                  <div className="caption-text font-semibold">Fusion Band / Decision</div>
-                  <div className="text-[22px] font-bold">
-                    {activeFusion.band} &rarr; {activeFusion.decision}
-                  </div>
-                </div>
-                <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)]">
-                  <div className="caption-text font-semibold">Voice-Clone / Liveness Override</div>
-                  <div className="text-[16px] font-semibold">
-                    {activeFusion.trust_breakdown.voice_clone_override_applied
-                      ? "Voice-Clone Override Active"
-                      : activeFusion.trust_breakdown.liveness_override_applied
-                        ? "Liveness Override Active"
-                        : "None Triggered"}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap gap-3">
+              {!streamingAudio ? (
                 <Button
                   type="button"
                   variant="primary"
-                  onClick={() => setChallengeOpen(true)}
-                  icon={<ShieldCheck className="w-4 h-4" />}
+                  disabled={busy}
+                  onClick={handleStartAletheiaStream}
+                  icon={<Radio className="w-4 h-4" />}
                 >
-                  Trigger STEP_UP Liveness Challenge
+                  Start 16 kHz WS Audio Stream (Speak 8+ seconds)
                 </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={async () => {
-                    await executeCallAction("PAUSE_BOT", "Paused during live presentation");
-                    setActionDoneNote("Executed PAUSE_BOT on backend call session.");
-                  }}
-                >
-                  Pause Voice Bot (`PAUSE_BOT`)
-                </Button>
+              ) : (
                 <Button
                   type="button"
                   variant="danger"
-                  onClick={async () => {
-                    await executeCallAction("BLOCK", "Blocked in live demo");
-                    setActionDoneNote("Executed BLOCK on backend call session.");
-                  }}
+                  onClick={handleStopAletheiaStream}
+                  icon={<StopCircle className="w-4 h-4" />}
                 >
-                  Block Call (`BLOCK`)
+                  Stop &amp; Run Live Aletheia + Groq
                 </Button>
-              </div>
-              {actionDoneNote && (
-                <Banner variant="info" title="Action Recorded">
-                  {actionDoneNote}
-                </Banner>
               )}
-            </>
-          )}
 
-          <ChallengeModal
-            isOpen={challengeOpen}
-            onClose={() => setChallengeOpen(false)}
-            callId={activeFusion?.call_id || undefined}
-            customerId={enrolledVp?.customer_id || presenterId}
-            executionMode="LIVE"
-            onComplete={(resp, updated) => {
-              if (updated) {
-                setFusionCall(updated);
-                applyUpdatedCall(updated);
-              }
-              setActionDoneNote(`Liveness Challenge: ${resp.liveness_status} — ${resp.explanation}`);
-            }}
-          />
-        </Card>
-      )}
+              {latestLiveBlob && !streamingAudio && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={handleCachedRerun}
+                  icon={<RefreshCw className="w-4 h-4" />}
+                >
+                  Re-run Cached (0 credits)
+                </Button>
+              )}
+            </div>
 
-      {stepIndex === 7 && (
-        <Card className="space-y-5">
-          <div className="flex items-center justify-between">
-            <h2 className="section-title">Step 8: Backend Audit Report &amp; FRESH Usage Receipt</h2>
+            {liveAletheiaCall && (
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-[15px]">
+                    Aletheia Status: {liveAletheiaCall.voice_authenticity.status}
+                  </span>
+                  <span className="font-mono font-bold text-[16px]">
+                    Synthetic Likelihood:{" "}
+                    {liveAletheiaCall.voice_authenticity.deepfake_probability !== null
+                      ? liveAletheiaCall.voice_authenticity.deepfake_probability.toFixed(3)
+                      : "N/A"}
+                  </span>
+                </div>
+                <p className="caption-text">
+                  Operation ID: {liveAletheiaCall.voice_authenticity.operation_id || "—"} &bull;
+                  Latency: {liveAletheiaCall.voice_authenticity.latency_ms ?? "—"} ms &bull; Cache hit:{" "}
+                  {String(liveAletheiaCall.voice_authenticity.cache_hit)}
+                </p>
+                {liveAletheiaCall.transcript.length > 0 && (
+                  <p className="text-[14px]">
+                    <strong>Groq Transcript:</strong> {liveAletheiaCall.transcript[0].text}
+                  </p>
+                )}
+              </div>
+            )}
+          </Card>
+        )}
+
+        {stepIndex === 3 && (
+          <Card className="space-y-5">
+            <h2 className="section-title">Step 4: Live Eidos Biometric Verification (Own vs Other Speaker)</h2>
+            <p className="body-text">
+              Test against enrolled customer `{enrolledVp?.customer_id || presenterId}`. First speak
+              yourself to observe VERIFIED; then let someone else speak to observe MISMATCH.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-3">
+                <h3 className="font-bold text-[15px]">4A. Presenter Own Voice</h3>
+                <Button
+                  type="button"
+                  variant={eidosRecordingTarget === "own" ? "danger" : "primary"}
+                  disabled={busy || eidosRecordingTarget === "impostor"}
+                  onClick={() => void handleToggleEidosSample("own")}
+                  icon={<Mic className="w-4 h-4" />}
+                >
+                  {eidosRecordingTarget === "own" ? "Stop & Verify Own Voice" : "Record Own Voice Sample"}
+                </Button>
+                {ownVerifyResult && (
+                  <div className="space-y-1">
+                    <Badge variant={ownVerifyResult.verification_result === "VERIFIED" ? "success" : "warning"}>
+                      {ownVerifyResult.verification_result} ({ownVerifyResult.match_percentage?.toFixed(1) ?? "—"}%)
+                    </Badge>
+                    <p className="caption-text">{ownVerifyResult.notes}</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-3">
+                <h3 className="font-bold text-[15px]">4B. Different Speaker / Impostor</h3>
+                <Button
+                  type="button"
+                  variant={eidosRecordingTarget === "impostor" ? "danger" : "secondary"}
+                  disabled={busy || eidosRecordingTarget === "own"}
+                  onClick={() => void handleToggleEidosSample("impostor")}
+                  icon={<Mic className="w-4 h-4" />}
+                >
+                  {eidosRecordingTarget === "impostor"
+                    ? "Stop & Verify Impostor"
+                    : "Record Different Speaker Sample"}
+                </Button>
+                {impostorVerifyResult && (
+                  <div className="space-y-1">
+                    <Badge variant={impostorVerifyResult.verification_result === "MISMATCH" ? "danger" : "warning"}>
+                      {impostorVerifyResult.verification_result} ({impostorVerifyResult.match_percentage?.toFixed(1) ?? "—"}%)
+                    </Badge>
+                    <p className="caption-text">{impostorVerifyResult.notes}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {stepIndex === 4 && (
+          <Card className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="section-title">Step 5: Script Analysis (Groq Whisper + LLM)</h2>
+              <Badge variant="info">Layer 3</Badge>
+            </div>
+
+            <div className="p-4 rounded-xl border border-[var(--brand-steel)] bg-[var(--fill-subtle)] space-y-2">
+              <div className="text-[12px] font-bold uppercase text-[var(--brand-steel)]">
+                Teleprompter Prompt
+              </div>
+              <p className="text-[16px] font-medium text-[var(--text-primary)]">{TELEPROMPTER_SCRIPT}</p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant={sttListening ? "danger" : "secondary"}
+                onClick={handleToggleBrowserStt}
+                icon={<Mic className="w-4 h-4" />}
+              >
+                {sttListening ? "Stop Speech-to-Text" : "Capture Live Speech-to-Text"}
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                disabled={busy}
+                onClick={handleRunScriptAnalysis}
+                icon={<FileSearch className="w-4 h-4" />}
+              >
+                {busy ? "Analyzing with Groq..." : "Run Groq Script Analysis"}
+              </Button>
+            </div>
+
+            <textarea
+              value={spokenTranscript}
+              onChange={(e) => setSpokenTranscript(e.target.value)}
+              rows={3}
+              className="w-full p-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[14px]"
+            />
+
+            {scriptCall && (
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold">Engine: {scriptCall.scam_analysis.engine_used}</span>
+                  <Badge
+                    variant={
+                      scriptCall.scam_analysis.risk_score === null
+                        ? "neutral"
+                        : scriptCall.scam_analysis.risk_score >= 60
+                          ? "danger"
+                          : "warning"
+                    }
+                  >
+                    Script Risk:{" "}
+                    {scriptCall.scam_analysis.risk_score !== null
+                      ? `${scriptCall.scam_analysis.risk_score.toFixed(1)}/100`
+                      : "Unavailable"}
+                  </Badge>
+                </div>
+                <p className="body-text">{scriptCall.scam_analysis.summary}</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {scriptCall.scam_analysis.categories.map((c) => (
+                    <Badge key={c} variant="danger">
+                      {c}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Card>
+        )}
+
+        {stepIndex === 5 && (
+          <Card className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="section-title">Step 6: Real-Time Manipulation &amp; Pressure Markers</h2>
+              <Badge variant="info">Layer 4</Badge>
+            </div>
+
+            <textarea
+              value={manipTranscript}
+              onChange={(e) => setManipTranscript(e.target.value)}
+              rows={2}
+              className="w-full p-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[14px]"
+            />
+
             <Button
               type="button"
-              variant="secondary"
-              size="sm"
-              onClick={() => void handleLoadReportAndUsage()}
-              icon={<RefreshCw className="w-4 h-4" />}
+              variant={manipStreaming ? "danger" : "primary"}
+              onClick={() => void handleToggleManipStream()}
+              icon={<Activity className="w-4 h-4" />}
             >
-              Refresh Receipt
+              {manipStreaming
+                ? "Stop Stream & Finalize Manipulation Telemetry"
+                : "Stream Coercive Audio + Markers over WS"}
             </Button>
-          </div>
 
-          {finalReport && (
-            <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="font-bold">
-                  {finalReport.report_id} &bull; {finalReport.call_id}
-                </span>
-                <Link
-                  to={`/reports/${encodeURIComponent(finalReport.call_id)}`}
-                  className="text-[14px] font-semibold text-[var(--brand-steel)] hover:underline inline-flex items-center gap-1"
-                >
-                  <FileText className="w-4 h-4" /> Open Full Report
-                </Link>
+            {manipScore !== null && (
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
+                <div className="font-bold text-[15px]">
+                  Live Pressure Score: {manipScore.toFixed(1)}/100 ({liveManipMarkers.length} markers)
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {liveManipMarkers.map((m, idx) => (
+                    <Badge key={idx} variant={m.severity === "HIGH" ? "danger" : "warning"}>
+                      {m.category}: &ldquo;{m.phrase}&rdquo;
+                    </Badge>
+                  ))}
+                </div>
               </div>
-              <p className="body-text">{finalReport.executive_summary}</p>
+            )}
+          </Card>
+        )}
+
+        {stepIndex === 6 && (
+          <Card className="space-y-5">
+            <div className="flex items-center justify-between">
+              <h2 className="section-title">Step 7: 4-Layer Composite Fusion, Overrides &amp; Action</h2>
+              <Scale className="w-5 h-5 text-[var(--brand-steel)]" />
             </div>
-          )}
 
-          {usageSummary && (
-            <div className="space-y-3">
-              <div className="flex flex-wrap gap-4 text-[14px]">
-                <span className="font-semibold">
-                  Fresh Provider Calls: {usageSummary.fresh_calls}
-                </span>
-                <span className="font-semibold">
-                  Credits Used: {usageSummary.total_credits_used}
-                </span>
-                <span className="font-semibold">
-                  Remaining Balance: {usageSummary.credit_balance ?? "N/A"}
-                </span>
+            {!activeFusion ? (
+              <Banner variant="warn" title="Run Earlier Live Steps First">
+                Complete Step 3, 5, or 6 so AEGIS has a real LIVE CallSession to inspect here.
+              </Banner>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)]">
+                    <div className="caption-text font-semibold">Heuristic Risk Index</div>
+                    <div className="text-[28px] font-bold font-mono">
+                      {activeFusion.trust_score?.toFixed(1) ?? "N/A"}/100
+                    </div>
+                  </div>
+                  <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)]">
+                    <div className="caption-text font-semibold">Fusion Band / Decision</div>
+                    <div className="text-[22px] font-bold">
+                      {activeFusion.band} &rarr; {effectiveDecision}
+                    </div>
+                  </div>
+                  <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)]">
+                    <div className="caption-text font-semibold">Voice-Clone / Liveness Override</div>
+                    <div className="text-[16px] font-semibold">
+                      {activeFusion.trust_breakdown.voice_clone_override_applied
+                        ? "Voice-Clone Override Active"
+                        : activeFusion.trust_breakdown.liveness_override_applied
+                          ? "Liveness Override Active"
+                          : "None Triggered"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <Button
+                    type="button"
+                    variant="primary"
+                    onClick={() => void handleLiveOperatorAction("CHALLENGE", "Triggered STEP_UP challenge")}
+                    icon={<ShieldCheck className="w-4 h-4" />}
+                  >
+                    Trigger STEP_UP Liveness Challenge
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void handleLiveOperatorAction("PAUSE_BOT", "Paused during live presentation")}
+                  >
+                    Pause Voice Bot
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="danger"
+                    onClick={() => void handleLiveOperatorAction("TERMINATE_CALL", "Ended call in Live Demo")}
+                    icon={<PhoneOff className="w-4 h-4" />}
+                  >
+                    End Call
+                  </Button>
+                </div>
+                {actionDoneNote && (
+                  <Banner variant="info" title="Action Recorded">
+                    {actionDoneNote}
+                  </Banner>
+                )}
+              </>
+            )}
+
+            <ChallengeModal
+              isOpen={challengeOpen}
+              onClose={() => setChallengeOpen(false)}
+              callId={activeFusion?.call_id || undefined}
+              customerId={enrolledVp?.customer_id || presenterId}
+              executionMode="LIVE"
+              onComplete={(resp, updated) => {
+                if (updated) {
+                  setFusionCall(updated);
+                  applyUpdatedCall(updated);
+                }
+                setActionDoneNote(`Liveness Challenge: ${resp.liveness_status} — ${resp.explanation}`);
+                showToast({
+                  variant: resp.passed ? "success" : "warning",
+                  title: `Liveness ${resp.liveness_status}`,
+                  message: resp.explanation,
+                });
+              }}
+            />
+          </Card>
+        )}
+
+        {stepIndex === 7 && (
+          <Card className="space-y-5">
+            <div className="flex items-center justify-between">
+              <h2 className="section-title">Step 8: Backend Audit Report &amp; FRESH Usage Receipt</h2>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => void handleLoadReportAndUsage()}
+                icon={<RefreshCw className="w-4 h-4" />}
+              >
+                Refresh Receipt
+              </Button>
+            </div>
+
+            {finalReport && (
+              <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--fill-subtle)] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold">
+                    {finalReport.report_id} &bull; {finalReport.call_id}
+                  </span>
+                  <Link
+                    to={`/reports/${encodeURIComponent(finalReport.call_id)}`}
+                    className="text-[14px] font-semibold text-[var(--brand-steel)] hover:underline inline-flex items-center gap-1"
+                  >
+                    <FileText className="w-4 h-4" /> Open Full Report
+                  </Link>
+                </div>
+                <p className="body-text">{finalReport.executive_summary}</p>
               </div>
+            )}
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-[13px]">
-                  <thead>
-                    <tr className="border-b border-[var(--border)] text-[var(--text-secondary)]">
-                      <th className="py-2 pr-3">Service</th>
-                      <th className="py-2 pr-3">Operation ID</th>
-                      <th className="py-2 pr-3">Mode</th>
-                      <th className="py-2 pr-3">Credits</th>
-                      <th className="py-2 pr-3">Latency</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[var(--border)]">
-                    {usageSummary.operations.slice(0, 8).map((op) => (
-                      <tr key={op.operation_id}>
-                        <td className="py-2 pr-3 font-semibold uppercase">{op.service}</td>
-                        <td className="py-2 pr-3 font-mono">{op.operation_id}</td>
-                        <td className="py-2 pr-3">
-                          <Badge variant={op.mode === "FRESH" ? "success" : "neutral"}>
-                            {op.mode}
-                          </Badge>
-                        </td>
-                        <td className="py-2 pr-3 font-mono">{op.cost_credits}</td>
-                        <td className="py-2 pr-3 font-mono">{op.latency_ms} ms</td>
+            {usageSummary && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-4 text-[14px]">
+                  <span className="font-semibold">
+                    Fresh Provider Calls: {usageSummary.fresh_calls}
+                  </span>
+                  <span className="font-semibold">
+                    Credits Used: {usageSummary.total_credits_used}
+                  </span>
+                  <span className="font-semibold">
+                    Remaining Balance: {usageSummary.credit_balance ?? "Unavailable"}
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-[13px]">
+                    <thead>
+                      <tr className="border-b border-[var(--border)] text-[var(--text-secondary)]">
+                        <th className="py-2 pr-3">Service</th>
+                        <th className="py-2 pr-3">Operation ID</th>
+                        <th className="py-2 pr-3">Mode</th>
+                        <th className="py-2 pr-3">Credits</th>
+                        <th className="py-2 pr-3">Latency</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-[var(--border)]">
+                      {usageSummary.operations.slice(0, 8).map((op) => (
+                        <tr key={op.operation_id}>
+                          <td className="py-2 pr-3 font-semibold uppercase">
+                            {op.service === "groq" ? "Groq (no DetectifAI credits)" : op.service}
+                          </td>
+                          <td className="py-2 pr-3 font-mono">{op.operation_id}</td>
+                          <td className="py-2 pr-3">
+                            <Badge variant={op.mode === "FRESH" ? "success" : "neutral"}>
+                              {op.mode}
+                            </Badge>
+                          </td>
+                          <td className="py-2 pr-3 font-mono">{op.cost_credits}</td>
+                          <td className="py-2 pr-3 font-mono">{op.latency_ms} ms</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
-          )}
-        </Card>
-      )}
+            )}
+          </Card>
+        )}
 
-      {/* Navigation Footer */}
-      <div className="flex items-center justify-between pt-2">
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={stepIndex === 0}
-          onClick={() => setStepIndex((i) => Math.max(0, i - 1))}
-          icon={<ArrowLeft className="w-4 h-4" />}
-        >
-          Previous Step
-        </Button>
-
-        {stepIndex < STEP_LABELS.length - 1 ? (
+        {/* Navigation Footer */}
+        <div className="flex items-center justify-between pt-2">
           <Button
             type="button"
-            variant="primary"
-            onClick={() => setStepIndex((i) => Math.min(STEP_LABELS.length - 1, i + 1))}
+            variant="secondary"
+            disabled={stepIndex === 0}
+            onClick={() => setStepIndex((i) => Math.max(0, i - 1))}
+            icon={<ArrowLeft className="w-4 h-4" />}
           >
-            <span className="inline-flex items-center gap-1.5">
-              Next Step <ArrowRight className="w-4 h-4" />
-            </span>
+            Previous Step
           </Button>
-        ) : (
-          <Link to="/usage">
-            <Button type="button" variant="primary" icon={<CheckCircle2 className="w-4 h-4" />}>
-              Inspect Full Usage Ledger
+
+          {stepIndex < STEP_LABELS.length - 1 ? (
+            <Button
+              type="button"
+              variant="primary"
+              onClick={() => setStepIndex((i) => Math.min(STEP_LABELS.length - 1, i + 1))}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                Next Step <ArrowRight className="w-4 h-4" />
+              </span>
             </Button>
-          </Link>
-        )}
+          ) : (
+            <Link to="/usage">
+              <Button type="button" variant="primary" icon={<CheckCircle2 className="w-4 h-4" />}>
+                Inspect Full Usage Ledger
+              </Button>
+            </Link>
+          )}
+        </div>
       </div>
+
+      {/* Persistent Right-Side Call Control & Audit Panel (Bug 6) */}
+      <aside className="w-full lg:w-[320px] shrink-0 space-y-3">
+        <Card className="!p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="card-title">Live Decision State</h3>
+            <Badge
+              variant={
+                effectiveDecision === "ALLOW"
+                  ? "success"
+                  : effectiveDecision === "END_CALL" || effectiveDecision === "BLOCK"
+                  ? "danger"
+                  : "warning"
+              }
+            >
+              {effectiveDecision || "IDLE"}
+            </Badge>
+          </div>
+          <p className="caption-text font-mono">
+            {activeFusion ? `Call: ${activeFusion.call_id}` : anyLiveStreamActive ? "Live mic stream active" : "No call run yet"}
+          </p>
+          {sessionEndedLocally && (
+            <Banner variant="error" title="END_CALL">
+              Session ended and all active audio streams were stopped.
+            </Banner>
+          )}
+          {!sessionEndedLocally && activeFusion?.decision_reason && (
+            <p className="text-[14px] text-[var(--text-primary)]">{activeFusion.decision_reason}</p>
+          )}
+        </Card>
+
+        <OperatorActionsCard
+          decision={effectiveDecision}
+          guardState={guardState}
+          disabled={busy}
+          hasActiveSession={Boolean(activeFusion)}
+          isRecordingOrStreaming={anyLiveStreamActive}
+          onAction={(act, note) => void handleLiveOperatorAction(act, note)}
+        />
+
+        <Card className="!p-4 space-y-2">
+          <div className="flex items-center gap-2">
+            <Clock className="w-4 h-4 text-[var(--brand-steel)]" />
+            <h3 className="card-title">Audit Trail</h3>
+          </div>
+          {localAuditLog.length === 0 && (!activeFusion || activeFusion.actions_taken.length === 0) ? (
+            <p className="caption-text">Operator actions executed here are logged in real time.</p>
+          ) : (
+            <ul className="space-y-2 text-[13px] list-none m-0 p-0">
+              {localAuditLog.map((entry, idx) => (
+                <li key={`${entry.at}-${idx}`} className="border-b border-[var(--border)] pb-1.5 last:border-b-0">
+                  <span className="font-bold text-[var(--text-primary)]">{entry.action}</span>
+                  <p className="text-[var(--text-secondary)]">{entry.note}</p>
+                  <span className="caption-text font-mono">{formatDate(entry.at)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </aside>
     </div>
   );
 };

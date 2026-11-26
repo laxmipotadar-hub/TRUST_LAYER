@@ -144,11 +144,13 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
   const s = call.scam_analysis;
   const m = call.manipulation_analysis;
 
-  const rawDecision = (e.raw_payload as { result?: { decision?: string } } | null)?.result?.decision;
+  const rawDecision =
+    e.decision ||
+    (e.raw_payload as { result?: { decision?: string } } | null)?.result?.decision;
+  const normalizedDecision = rawDecision ? String(rawDecision).toUpperCase() : null;
   const eidosMatched =
     statuses.eidos === "done" &&
-    (e.status === "PASS" || rawDecision === "match") &&
-    Boolean(e.matched_customer_name);
+    (e.status === "PASS" || normalizedDecision === "MATCH");
 
   const eidosSkippedLabel =
     e.skip_reason === "aletheia_fake"
@@ -234,6 +236,16 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
               <Badge variant={e.enrolled ? "success" : "warning"} size="sm">
                 {e.enrolled ? "Enrolled voiceprint" : "Unenrolled (50.0 neutral)"}
               </Badge>
+              {normalizedDecision && normalizedDecision !== "SKIPPED" && (
+                <Badge variant={eidosMatched ? "success" : "danger"} size="sm">
+                  {normalizedDecision}
+                </Badge>
+              )}
+              {e.provider_speaker_id && (
+                <Badge variant="neutral" size="sm">
+                  speaker_id: {e.provider_speaker_id}
+                </Badge>
+              )}
               {eidosMatched && e.matched_customer_name && (
                 <Badge variant="info" size="sm">
                   Matched: {e.matched_customer_name}
@@ -256,7 +268,11 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
             : `Safety ${s.safety_score!.toFixed(1)}/100 (Risk ${s.risk_score!.toFixed(1)})`
         }
         latencyMs={s.latency_ms}
-        modelVersion={s.model_version || s.engine_used}
+        modelVersion={
+          s.engine_used.includes("Groq") && s.latency_ms !== null && s.latency_ms !== undefined
+            ? `Groq · ${s.latency_ms.toFixed(0)} ms`
+            : s.model_version || s.engine_used
+        }
         operationId={s.operation_id}
         summary={s.summary}
         rawPayload={s.raw_payload || s}
@@ -301,7 +317,11 @@ export const LayerCardsGrid: React.FC<LayerCardsGridProps> = ({
             : `Safety ${m.safety_score!.toFixed(1)}/100 (Pressure ${m.score!.toFixed(1)})`
         }
         latencyMs={m.latency_ms}
-        modelVersion={m.model_version}
+        modelVersion={
+          m.latency_ms !== null && m.latency_ms !== undefined && !manipUnavailable
+            ? `Groq · ${m.latency_ms.toFixed(0)} ms`
+            : m.model_version
+        }
         summary={
           manipUnavailable
             ? "Manipulation analysis unavailable (no caller transcript supplied)."

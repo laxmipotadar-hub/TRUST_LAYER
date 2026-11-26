@@ -42,7 +42,7 @@ def _clean_state(tmp_path, monkeypatch):
     cache_service.clear()
     clear_ledger()
     monkeypatch.setattr(settings, "detectif_api_key", "")
-    monkeypatch.setattr(settings, "gemini_api_key", "")
+    monkeypatch.setattr(settings, "groq_api_key", "")
     client.post(
         "/api/settings",
         json={

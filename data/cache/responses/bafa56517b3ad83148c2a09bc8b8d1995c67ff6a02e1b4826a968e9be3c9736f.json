@@ -1,0 +1,111 @@
+{
+  "cache_key": "bafa56517b3ad83148c2a09bc8b8d1995c67ff6a02e1b4826a968e9be3c9736f",
+  "provider": "aletheia",
+  "cached_at": "2026-11-26T01:47:26.223973+00:00",
+  "cache_hit": false,
+  "payload": {
+    "score": 81.1,
+    "deepfake_probability": 0.189,
+    "verdict": "real",
+    "model_name": "DetectifAI Aletheia",
+    "model_version": "aletheia-v1",
+    "status": "PASS",
+    "artifacts_detected": [],
+    "provenance": "REAL ANALYSIS",
+    "detail": "DetectifAI Aletheia verdict='real' across 1 clip(s): authenticity 81.1/100, synthetic likelihood 0.189.",
+    "cache_hit": false,
+    "request_id": "req_1e954c8175d28eeab861ea7c",
+    "operation_id": "op_ad97a07c9df54e27b5c09f3c2e0ef2a7",
+    "cost_credits": 24.0,
+    "latency_ms": 2502.29,
+    "error_code": null,
+    "http_status": null,
+    "raw_payload": {
+      "request_id": "req_1e954c8175d28eeab861ea7c",
+      "operation_id": "op_ad97a07c9df54e27b5c09f3c2e0ef2a7",
+      "object": "deepfake.detection",
+      "result": {
+        "label": "genuine",
+        "is_synthetic": false,
+        "score": 0.189244,
+        "threshold": 0.62,
+        "score_semantics": "Higher means more likely AI-generated. Decide with the verdict, not the score alone.",
+        "duration_seconds": 20.733,
+        "scored_seconds": 20.733,
+        "segments": [
+          {
+            "start": 0.0,
+            "end": 4.0,
+            "score": 0.013385,
+            "verdict": "real"
+          },
+          {
+            "start": 2.0,
+            "end": 6.0,
+            "score": 0.070571,
+            "verdict": "real"
+          },
+          {
+            "start": 4.0,
+            "end": 8.0,
+            "score": 0.044223,
+            "verdict": "real"
+          },
+          {
+            "start": 6.0,
+            "end": 10.0,
+            "score": 0.125345,
+            "verdict": "real"
+          },
+          {
+            "start": 8.0,
+            "end": 12.0,
+            "score": 0.190838,
+            "verdict": "real"
+          },
+          {
+            "start": 10.0,
+            "end": 14.0,
+            "score": 0.143314,
+            "verdict": "real"
+          },
+          {
+            "start": 12.0,
+            "end": 16.0,
+            "score": 0.782198,
+            "verdict": "real"
+          },
+          {
+            "start": 14.0,
+            "end": 18.0,
+            "score": 0.440818,
+            "verdict": "real"
+          },
+          {
+            "start": 16.0,
+            "end": 20.0,
+            "score": 0.011678,
+            "verdict": "real"
+          },
+          {
+            "start": 16.733,
+            "end": 20.733,
+            "score": 0.070073,
+            "verdict": "real"
+          }
+        ],
+        "verdict": "real"
+      },
+      "model": {
+        "name": "aletheia",
+        "version": "2026.10"
+      },
+      "credits": {
+        "charged": 42,
+        "balance": 3976
+      },
+      "latency_ms": 243.0,
+      "idempotent_replay": false
+    }
+  }
+}

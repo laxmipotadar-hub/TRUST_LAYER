@@ -27,12 +27,12 @@ Zero API keys are ever stored in browser storage (`localStorage` / `IndexedDB`) 
 
 **Option A — In the UI (fastest during a live demo):**
 1. Open **Settings** (`/settings`) in the left navigation rail.
-2. Paste your **DetectifAI API Key** (`DETECTIF_API_KEY`) and optional **Gemini API Key** (`GEMINI_API_KEY`).
+2. Paste your **DetectifAI API Key** (`DETECTIF_API_KEY`) and optional **Groq API Key** (`GROQ_API_KEY`).
 3. Click **Save API Credentials Server-Side** (`POST /api/settings/secrets`).
    Keys are stored strictly on the backend at `backend/data/secrets.local.json` (`chmod 0600`, gitignored).
 
 **Option B — In `.env` before booting uvicorn:**
-Place `DETECTIF_API_KEY=...` and `GEMINI_API_KEY=...` in `/home/laxmi/TRUST_LAYER/.env` (or `backend/.env`).
+Place `DETECTIF_API_KEY=...` and `GROQ_API_KEY=...` in `/home/laxmi/TRUST_LAYER/.env` (or `backend/.env`).
 
 ---
 

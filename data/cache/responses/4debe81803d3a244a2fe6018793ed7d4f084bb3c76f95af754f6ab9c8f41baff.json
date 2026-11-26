@@ -1,0 +1,138 @@
+{
+  "cache_key": "4debe81803d3a244a2fe6018793ed7d4f084bb3c76f95af754f6ab9c8f41baff",
+  "provider": "groq_content",
+  "cached_at": "2026-11-26T01:42:38.879995+00:00",
+  "cache_hit": false,
+  "payload": {
+    "transcript": "Read back your 6-digit OTP code immediately.",
+    "asr_status": "OK",
+    "asr_reason": null,
+    "scam": {
+      "risk_score": 80.0,
+      "safety_score": 20.0,
+      "behavioral_pressure_score": 50.0,
+      "status": "FAIL",
+      "categories": [
+        "Credential / OTP solicitation",
+        "Urgency escalation"
+      ],
+      "detected_patterns": [
+        "Credential / OTP solicitation",
+        "Urgency escalation"
+      ],
+      "pressure_tactics": [
+        "credential_request",
+        "urgency"
+      ],
+      "flagged_phrases": [
+        {
+          "phrase": "immediately",
+          "category": "Urgency escalation",
+          "severity": "MEDIUM",
+          "weight": 25,
+          "explanation": "Groq LLM grounded quote for urgency."
+        },
+        {
+          "phrase": "Read back your 6-digit OTP code",
+          "category": "Credential / OTP solicitation",
+          "severity": "HIGH",
+          "weight": 25,
+          "explanation": "Groq LLM grounded quote for credential_request."
+        }
+      ],
+      "engine_used": "Groq Whisper + LLM",
+      "model_version": "openai/gpt-oss-120b",
+      "latency_ms": 766.57,
+      "provenance": "REAL ANALYSIS",
+      "summary": "The caller pressures the user to disclose a one-time password immediately.",
+      "recommended_action": "Require out-of-band verification.",
+      "fallback_used": false,
+      "fallback_reason": null,
+      "cache_hit": false,
+      "operation_id": "op_groq_llm_4a2607bf",
+      "cost_credits": 0.0,
+      "raw_payload": {
+        "model": "openai/gpt-oss-120b",
+        "scam_script_risk": 80.0,
+        "manipulation_risk_raw": 75.0,
+        "behavioural_score_computed": 50.0,
+        "tactics_verified": [
+          {
+            "type": "urgency",
+            "evidence": "immediately"
+          },
+          {
+            "type": "credential_request",
+            "evidence": "Read back your 6-digit OTP code"
+          }
+        ],
+        "tactics_dropped": 0,
+        "summary": "The caller pressures the user to disclose a one-time password immediately."
+      }
+    },
+    "manipulation": {
+      "score": 50.0,
+      "safety_score": 50.0,
+      "status": "WARN",
+      "model_version": "openai/gpt-oss-120b",
+      "latency_ms": 766.57,
+      "category_counts": {
+        "urgency": 1,
+        "secrecy": 1,
+        "authority": 0,
+        "threat": 0
+      },
+      "markers": [
+        {
+          "category": "urgency",
+          "phrase": "immediately",
+          "excerpt": "immediately",
+          "timestamp_sec": 1.0,
+          "weight": 25,
+          "severity": "MEDIUM"
+        },
+        {
+          "category": "secrecy",
+          "phrase": "Read back your 6-digit OTP code",
+          "excerpt": "Read back your 6-digit OTP code",
+          "timestamp_sec": 2.0,
+          "weight": 25,
+          "severity": "HIGH"
+        }
+      ],
+      "sparkline": [
+        25.0,
+        50.0
+      ],
+      "provenance": "REAL ANALYSIS",
+      "raw_payload": {
+        "model": "openai/gpt-oss-120b",
+        "score": 50.0,
+        "category_counts": {
+          "urgency": 1,
+          "secrecy": 1,
+          "authority": 0,
+          "threat": 0
+        },
+        "markers": [
+          {
+            "category": "urgency",
+            "phrase": "immediately",
+            "excerpt": "immediately",
+            "timestamp_sec": 1.0,
+            "weight": 25,
+            "severity": "MEDIUM"
+          },
+          {
+            "category": "secrecy",
+            "phrase": "Read back your 6-digit OTP code",
+            "excerpt": "Read back your 6-digit OTP code",
+            "timestamp_sec": 2.0,
+            "weight": 25,
+            "severity": "HIGH"
+          }
+        ]
+      }
+    }
+  }
+}

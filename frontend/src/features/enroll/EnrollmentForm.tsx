@@ -6,6 +6,7 @@ import { Banner } from "../../components/ui/Banner";
 import { SampleRecorder, type SampleValue } from "./SampleRecorder";
 import { copy, getError } from "../../copy";
 import { aegisApi } from "../../lib/api";
+import { useAnalysis } from "../../context/AnalysisContext";
 import type { ApiError, VoiceprintRecord } from "../../types";
 
 export interface EnrollmentFormProps {
@@ -17,6 +18,7 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
   onSuccess,
   onNavigateList,
 }) => {
+  const { executionMode, refreshVoiceprints, refreshSystem } = useAnalysis();
   const [customerId, setCustomerId] = useState("");
   const [customerName, setCustomerName] = useState("");
   const [accountTier, setAccountTier] = useState("Private Banking");
@@ -40,6 +42,11 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
       setErrorMsg(getError("INVALID_PAYLOAD"));
       return;
     }
+    const cleanId = customerId.trim().toUpperCase();
+    if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(cleanId)) {
+      setErrorMsg("Customer ID must match ^[A-Za-z0-9_.:-]{1,64}$ (letters, numbers, -, _, ., :).");
+      return;
+    }
 
     setErrorMsg(null);
     setIsSubmitting(true);
@@ -47,17 +54,19 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
     try {
       const record = await aegisApi.enrollVoiceprintAudio({
         file: primarySample.blob,
-        customer_id: customerId.trim().toUpperCase(),
+        customer_id: cleanId,
         customer_name: customerName.trim(),
         account_tier: accountTier,
         consent_confirmed: true,
         sample_duration_sec: primarySample.duration,
+        execution_mode: executionMode,
       });
+      await Promise.all([refreshVoiceprints(), refreshSystem()]);
       setEnrolledRecord(record);
       onSuccess();
     } catch (err: unknown) {
       const apiErr = err as ApiError;
-      setErrorMsg(getError(apiErr?.code || "CLIENT_ERROR", apiErr?.message));
+      setErrorMsg(apiErr?.message || getError(apiErr?.code || "CLIENT_ERROR", apiErr?.message));
     } finally {
       setIsSubmitting(false);
     }
@@ -72,10 +81,25 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
         <h3 className="section-title text-[var(--decision-continue-text)]">
           {enrolledRecord.voiceprint_id}: {copy.enroll.successSuffix}
         </h3>
-        <p className="body-text">
-          customer_id: <span className="font-mono font-semibold">{enrolledRecord.customer_id}</span> ·{" "}
-          provider_speaker_ref: <span className="font-mono">{enrolledRecord.provider_speaker_ref}</span>
-        </p>
+        <div className="p-3 rounded-lg bg-[var(--fill-subtle)] border border-[var(--border)] text-[14px] space-y-1 text-left">
+          <p>
+            <strong>customer_id:</strong> <span className="font-mono">{enrolledRecord.customer_id}</span>
+          </p>
+          <p>
+            <strong>speaker_id:</strong>{" "}
+            <span className="font-mono">
+              {enrolledRecord.provider_speaker_id || enrolledRecord.provider_speaker_ref || "N/A"}
+            </span>
+          </p>
+          <p>
+            <strong>operation_id:</strong>{" "}
+            <span className="font-mono">{enrolledRecord.provider_operation_id || (enrolledRecord.reconciled ? "Reconciled existing provider speaker" : "SIMULATION")}</span>
+          </p>
+          <p>
+            <strong>credits_used:</strong>{" "}
+            <span className="font-mono">{enrolledRecord.credits_used ?? 0} credits</span>
+          </p>
+        </div>
         <div className="pt-2 flex justify-center gap-3">
           <Button
             variant="secondary"
@@ -105,6 +129,12 @@ export const EnrollmentForm: React.FC<EnrollmentFormProps> = ({
       </div>
 
       <Banner variant="info">{copy.enroll.retentionBanner}</Banner>
+
+      {executionMode === "DEMO" && (
+        <Banner variant="warn" title="DEMO Mode Active (Simulation Enrollment)">
+          Enrollments in DEMO mode create simulation-only records (`sim-*`) and cannot be verified by live DetectifAI Eidos in Analyze. Switch the header toggle to LIVE to enroll a real provider speaker ID.
+        </Banner>
+      )}
 
       {errorMsg && (
         <div className="p-3 bg-[var(--decision-endcall-tint)] border border-[var(--decision-endcall-border)] rounded-lg text-[14px] text-[var(--decision-endcall-text)] flex items-center gap-2">
